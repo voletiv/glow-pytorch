@@ -1,6 +1,6 @@
 {
     "Dir": {
-        "log_root": "results/mnist"
+        "log_root": "results/svhn"
     },
     "Glow" : {
         "image_shape": [32, 32, 3],
@@ -19,7 +19,7 @@
         "y_condition": "multi-classes"
     },
     "Data" : {
-        "center_crop": 28,
+        "center_crop": 32,
         "resize": 32
     },
     "Optim": {
