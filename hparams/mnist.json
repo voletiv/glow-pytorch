@@ -42,7 +42,7 @@
         "data": "cuda:0"
     },
     "Train": {
-        "batch_size": 32,
+        "batch_size": 128,
         "num_batches": 3000,
         "max_grad_clip": 5,
         "max_grad_norm": 100,

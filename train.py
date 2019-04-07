@@ -3,13 +3,15 @@
 Usage:
     train.py <hparams> <dataset> <dataset_root> <name>
 """
+from comet_ml import Experiment
+
 import os
 import vision
 from docopt import docopt
 from torchvision import transforms
 from glow.builder import build
 from glow.config import JsonConfig
-from glow.trainer_wandb import Trainer
+from glow.trainer_cometml import Trainer
 
 
 if __name__ == "__main__":

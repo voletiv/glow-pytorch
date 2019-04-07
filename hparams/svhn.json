@@ -12,7 +12,7 @@
         "flow_coupling": "affine",
         "LU_decomposed": false,
         "learn_top": false,
-        "y_condition": false,
+        "y_condition": true,
         "y_classes": 10
     },
     "Criterion" : {

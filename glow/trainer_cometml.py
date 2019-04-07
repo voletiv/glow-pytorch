@@ -1,4 +1,3 @@
-# Import comet_ml in the top of your file
 from comet_ml import Experiment
 
 import re
@@ -7,6 +6,9 @@ import torch
 import torch.nn.functional as F
 import datetime
 import numpy as np
+import subprocess
+import torchvision.utils as vutils
+
 from tqdm import tqdm
 # from tensorboardX import SummaryWriter
 from torch.utils.data import DataLoader
@@ -20,6 +22,7 @@ class Trainer(object):
     def __init__(self, graph, optim, lrschedule, loaded_step,
                  devices, data_device,
                  dataset, hparams, name):
+        self.hparams = hparams
         self.name = name
         if isinstance(hparams, str):
             hparams = JsonConfig(hparams)
@@ -57,8 +60,7 @@ class Trainer(object):
                                     #   num_workers=8,
                                       shuffle=True,
                                       drop_last=True)
-        self.n_epoches = (hparams.Train.num_batches+len(self.data_loader)-1)
-        self.n_epoches = self.n_epoches // len(self.data_loader)
+        self.n_epoches = (hparams.Train.num_batches+len(self.data_loader)-1) // len(self.data_loader)
         self.global_step = 0
         # lr schedule
         self.lrschedule = lrschedule
@@ -67,6 +69,7 @@ class Trainer(object):
         self.y_classes = hparams.Glow.y_classes
         self.y_condition = hparams.Glow.y_condition
         self.y_criterion = hparams.Criterion.y_condition
+        # Checkpoints
         assert self.y_criterion in ["multi-classes", "single-class"]
 
         # log relative
@@ -75,12 +78,30 @@ class Trainer(object):
         self.scalar_log_gaps = hparams.Train.scalar_log_gap
         self.plot_gaps = hparams.Train.plot_gap
         self.inference_gap = hparams.Train.inference_gap
+        self.n_image_samples = hparams.Train.n_image_samples
+
+    def hparams_dict(self):
+        hparams_dict = {}
+        hparams = self.hparams.to_dict()
+        for key in hparams:
+            for in_key in hparams[key]:
+                hparams_dict[in_key] = hparams[key][in_key]
+        # Also
+        hparams_dict['name'] = self.name
+        hparams_dict['date'] = self.date
+        hparams_dict['run_name'] = self.date + "_" + self.name
+        hparams_dict['log_dir'] = self.log_dir
+        hparams_dict['n_epoches'] = self.n_epoches
+        return hparams_dict
 
     def train(self):
 
+        # comet_ml
         # Create an experiment
         experiment = Experiment(api_key="B6hzNydshIpZSG2Xi9BDG9gdG",
                                 project_name="glow-mnist", workspace="voletiv")
+        hparams_dict = self.hparams_dict()
+        experiment.log_multiple_params(hparams_dict)
 
         # set to training state
         self.graph.train()
@@ -90,21 +111,22 @@ class Trainer(object):
         for epoch in range(self.n_epoches):
             print("epoch", epoch)
             progress = tqdm(self.data_loader)
-
-            # For each batch
             for i_batch, batch in enumerate(progress):
+
+                experiment.set_step(self.global_step)
 
                 # update learning rate
                 lr = self.lrschedule["func"](global_step=self.global_step,
                                              **self.lrschedule["args"])
                 for param_group in self.optim.param_groups:
                     param_group['lr'] = lr
-
                 self.optim.zero_grad()
 
+                # log
                 if self.global_step % self.scalar_log_gaps == 0:
                     # self.writer.add_scalar("lr/lr", lr, self.global_step)
-                    experiment.log_metrics({"lr": lr, "epoch": epoch+i_batch/len(self.data_loader)}, step=self.global_step)
+                    experiment.log_metrics({"lr": lr, "epoch": epoch+i_batch/len(self.data_loader)})
+
                 # get batch data
                 for k in batch:
                     batch[k] = batch[k].to(self.data_device)
@@ -124,35 +146,41 @@ class Trainer(object):
                 if self.global_step == 0:
                     self.graph(x[:self.batch_size // len(self.devices), ...],
                                y_onehot[:self.batch_size // len(self.devices), ...] if y_onehot is not None else None)
+
                 # parallel
                 if len(self.devices) > 1 and not hasattr(self.graph, "module"):
                     print("[Parallel] move to {}".format(self.devices))
                     self.graph = torch.nn.parallel.DataParallel(self.graph, self.devices, self.devices[0])
+
                 # forward phase
                 z, nll, y_logits = self.graph(x=x, y_onehot=y_onehot)
 
-                # loss
+                # loss_generative
                 loss_generative = Glow.loss_generative(nll)
+
+                # loss_classes
                 loss_classes = 0
                 if self.y_condition:
                     loss_classes = (Glow.loss_multi_classes(y_logits, y_onehot)
                                     if self.y_criterion == "multi-classes" else
                                     Glow.loss_class(y_logits, y))
 
+                # total loss
+                loss = loss_generative + loss_classes * self.weight_y
+
+                # log
                 if self.global_step % self.scalar_log_gaps == 0:
                     # self.writer.add_scalar("loss/loss_generative", loss_generative, self.global_step)
-                    experiment.log_metric("loss_generative", loss_generative, step=self.global_step)
+                    experiment.log_metrics({"loss_generative": loss_generative})
                     if self.y_condition:
                         # self.writer.add_scalar("loss/loss_classes", loss_classes, self.global_step)
-                        experiment.log_metric("loss_classes", loss_classes, step=self.global_step)
-
-                # loss
-                loss = loss_generative + loss_classes * self.weight_y
+                        experiment.log_metrics({"loss_classes": loss_classes, "total_loss": loss})
 
                 # backward
                 self.graph.zero_grad()
                 self.optim.zero_grad()
                 loss.backward()
+
                 # operate grad
                 if self.max_grad_clip is not None and self.max_grad_clip > 0:
                     torch.nn.utils.clip_grad_value_(self.graph.parameters(), self.max_grad_clip)
@@ -160,7 +188,7 @@ class Trainer(object):
                     grad_norm = torch.nn.utils.clip_grad_norm_(self.graph.parameters(), self.max_grad_norm)
                     if self.global_step % self.scalar_log_gaps == 0:
                         # self.writer.add_scalar("grad_norm/grad_norm", grad_norm, self.global_step)
-                        experiment.log_metric("grad_norm", grad_norm, step=self.global_step)
+                        experiment.log_metrics({"grad_norm": grad_norm})
 
                 # step
                 self.optim.step()
@@ -174,10 +202,11 @@ class Trainer(object):
                          is_best=True,
                          max_checkpoints=self.max_checkpoints)
 
-                # plots
+                # plot images
                 if self.global_step % self.plot_gaps == 0:
                     img = self.graph(z=z, y_onehot=y_onehot, reverse=True)
                     # img = torch.clamp(img, min=0, max=1.0)
+
                     if self.y_condition:
                         if self.y_criterion == "multi-classes":
                             y_pred = torch.sigmoid(y_logits)
@@ -185,21 +214,41 @@ class Trainer(object):
                             y_pred = thops.onehot(torch.argmax(F.softmax(y_logits, dim=1), dim=1, keepdim=True),
                                                   self.y_classes)
                         y_true = y_onehot
-                    for bi in range(min([len(img), 4])):
-                        # self.writer.add_image("0_reverse/{}".format(bi), torch.cat((img[bi], batch["x"][bi]), dim=1), self.global_step)
-                        wandb.log({"0_reverse/{}".format(bi): [wandb.Image(torch.cat((img[bi], batch["x"][bi]), dim=1), caption="0_reverse/{}".format(bi))], "epoch": epoch+i_batch/len(self.data_loader)})
-                        if self.y_condition:
-                            # self.writer.add_image("1_prob/{}".format(bi), plot_prob([y_pred[bi], y_true[bi]], ["pred", "true"]), self.global_step)
-                            wandb.log({"1_prob/{}".format(bi): [wandb.Image(plot_prob([y_pred[bi], y_true[bi]], ["pred", "true"]))], "epoch": epoch+i_batch/len(self.data_loader)})
+
+                    # plot images
+                    # self.writer.add_image("0_reverse/{}".format(bi), torch.cat((img[bi], batch["x"][bi]), dim=1), self.global_step)
+                    vutils.save_image(torch.stack([torch.cat((img[bi], batch["x"][bi]), dim=1) for bi in range(min([len(img), self.n_image_samples]))]), '/tmp/vikramvoleti.png', nrow=10)
+                    experiment.log_image('/tmp/vikramvoleti.png', file_name="0_reverse")
+
+                    # plot preds
+                    # for bi in range(min([len(img), self.n_image_samples])):
+                    #     # wandb.log({"0_reverse_{}".format(bi): [wandb.Image(torch.cat((img[bi], batch["x"][bi]), dim=1), caption="0_reverse/{}".format(bi))]}, step=self.global_step)
+                    #     if self.y_condition:
+                    #         # self.writer.add_image("1_prob/{}".format(bi), plot_prob([y_pred[bi], y_true[bi]], ["pred", "true"]), self.global_step)
+                    #         wandb.log({"1_prob_{}".format(bi): [wandb.Image(plot_prob([y_pred[bi], y_true[bi]], ["pred", "true"]))]}, step=self.global_step)
 
                 # inference
                 if hasattr(self, "inference_gap"):
                     if self.global_step % self.inference_gap == 0:
-                        img = self.graph(z=None, y_onehot=y_onehot, eps_std=0.5, reverse=True)
+                        try:
+                            img = self.graph(z=None, y_onehot=inference_y_onehot, eps_std=0.5, reverse=True)
+                        except NameError:
+                            inference_y_onehot = torch.zeros_like(y_onehot, device=torch.device('cpu'))
+                            for i in range(inference_y_onehot.size(0)):
+                                inference_y_onehot[i, (i % inference_y_onehot.size(1))] = 1.
+                            # now
+                            inference_y_onehot = inference_y_onehot.to(y_onehot.device)
+                            img = self.graph(z=None, y_onehot=inference_y_onehot, eps_std=0.5, reverse=True)
+                        # grid
+                        vutils.save_image(img[:min([len(img), self.n_image_samples])], '/tmp/vikramvoleti.png', nrow=10)
+                        experiment.log_image('/tmp/vikramvoleti.png', file_name="1_samples")
                         # img = torch.clamp(img, min=0, max=1.0)
-                        for bi in range(min([len(img), 4])):
-                            # self.writer.add_image("2_sample/{}".format(bi), img[bi], self.global_step)
-                            wandb.log({"2_sample/{}".format(bi): [wandb.Image(img[bi])], "epoch": epoch+i_batch/len(self.data_loader)})
+                        # for bi in range(min([len(img), n_images])):
+                        #     # self.writer.add_image("2_sample/{}".format(bi), img[bi], self.global_step)
+                        #     wandb.log({"2_sample_{}".format(bi): [wandb.Image(img[bi])]}, step=self.global_step)
+
+                if self.global_step == 0:
+                    subprocess.run('nvidia-smi')
 
                 # global step
                 self.global_step += 1
