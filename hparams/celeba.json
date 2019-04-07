@@ -52,6 +52,7 @@
         "scalar_log_gap": 50,
         "plot_gap": 50,
         "inference_gap": 50,
+        "n_image_samples": 20,
         "warm_start": "",
         "weight_y": 0.5
     },

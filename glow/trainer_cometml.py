@@ -1,12 +1,14 @@
+# Import comet_ml in the top of your file
+from comet_ml import Experiment
+
 import re
 import os
 import torch
 import torch.nn.functional as F
 import datetime
 import numpy as np
-import subprocess
 from tqdm import tqdm
-from tensorboardX import SummaryWriter
+# from tensorboardX import SummaryWriter
 from torch.utils.data import DataLoader
 from .utils import save, load, plot_prob
 from .config import JsonConfig
@@ -69,28 +71,40 @@ class Trainer(object):
 
         # log relative
         # tensorboard
-        self.writer = SummaryWriter(log_dir=self.log_dir)
+        # self.writer = SummaryWriter(log_dir=self.log_dir)
         self.scalar_log_gaps = hparams.Train.scalar_log_gap
         self.plot_gaps = hparams.Train.plot_gap
         self.inference_gap = hparams.Train.inference_gap
 
     def train(self):
+
+        # Create an experiment
+        experiment = Experiment(api_key="B6hzNydshIpZSG2Xi9BDG9gdG",
+                                project_name="glow-mnist", workspace="voletiv")
+
         # set to training state
         self.graph.train()
         self.global_step = self.loaded_step
+
         # begin to train
         for epoch in range(self.n_epoches):
             print("epoch", epoch)
             progress = tqdm(self.data_loader)
+
+            # For each batch
             for i_batch, batch in enumerate(progress):
+
                 # update learning rate
                 lr = self.lrschedule["func"](global_step=self.global_step,
                                              **self.lrschedule["args"])
                 for param_group in self.optim.param_groups:
                     param_group['lr'] = lr
+
                 self.optim.zero_grad()
+
                 if self.global_step % self.scalar_log_gaps == 0:
-                    self.writer.add_scalar("lr/lr", lr, self.global_step)
+                    # self.writer.add_scalar("lr/lr", lr, self.global_step)
+                    experiment.log_metrics({"lr": lr, "epoch": epoch+i_batch/len(self.data_loader)}, step=self.global_step)
                 # get batch data
                 for k in batch:
                     batch[k] = batch[k].to(self.data_device)
@@ -124,10 +138,15 @@ class Trainer(object):
                     loss_classes = (Glow.loss_multi_classes(y_logits, y_onehot)
                                     if self.y_criterion == "multi-classes" else
                                     Glow.loss_class(y_logits, y))
+
                 if self.global_step % self.scalar_log_gaps == 0:
-                    self.writer.add_scalar("loss/loss_generative", loss_generative, self.global_step)
+                    # self.writer.add_scalar("loss/loss_generative", loss_generative, self.global_step)
+                    experiment.log_metric("loss_generative", loss_generative, step=self.global_step)
                     if self.y_condition:
-                        self.writer.add_scalar("loss/loss_classes", loss_classes, self.global_step)
+                        # self.writer.add_scalar("loss/loss_classes", loss_classes, self.global_step)
+                        experiment.log_metric("loss_classes", loss_classes, step=self.global_step)
+
+                # loss
                 loss = loss_generative + loss_classes * self.weight_y
 
                 # backward
@@ -140,7 +159,9 @@ class Trainer(object):
                 if self.max_grad_norm is not None and self.max_grad_norm > 0:
                     grad_norm = torch.nn.utils.clip_grad_norm_(self.graph.parameters(), self.max_grad_norm)
                     if self.global_step % self.scalar_log_gaps == 0:
-                        self.writer.add_scalar("grad_norm/grad_norm", grad_norm, self.global_step)
+                        # self.writer.add_scalar("grad_norm/grad_norm", grad_norm, self.global_step)
+                        experiment.log_metric("grad_norm", grad_norm, step=self.global_step)
+
                 # step
                 self.optim.step()
 
@@ -152,6 +173,8 @@ class Trainer(object):
                          pkg_dir=self.checkpoints_dir,
                          is_best=True,
                          max_checkpoints=self.max_checkpoints)
+
+                # plots
                 if self.global_step % self.plot_gaps == 0:
                     img = self.graph(z=z, y_onehot=y_onehot, reverse=True)
                     # img = torch.clamp(img, min=0, max=1.0)
@@ -163,9 +186,11 @@ class Trainer(object):
                                                   self.y_classes)
                         y_true = y_onehot
                     for bi in range(min([len(img), 4])):
-                        self.writer.add_image("0_reverse/{}".format(bi), torch.cat((img[bi], batch["x"][bi]), dim=1), self.global_step)
+                        # self.writer.add_image("0_reverse/{}".format(bi), torch.cat((img[bi], batch["x"][bi]), dim=1), self.global_step)
+                        wandb.log({"0_reverse/{}".format(bi): [wandb.Image(torch.cat((img[bi], batch["x"][bi]), dim=1), caption="0_reverse/{}".format(bi))], "epoch": epoch+i_batch/len(self.data_loader)})
                         if self.y_condition:
-                            self.writer.add_image("1_prob/{}".format(bi), plot_prob([y_pred[bi], y_true[bi]], ["pred", "true"]), self.global_step)
+                            # self.writer.add_image("1_prob/{}".format(bi), plot_prob([y_pred[bi], y_true[bi]], ["pred", "true"]), self.global_step)
+                            wandb.log({"1_prob/{}".format(bi): [wandb.Image(plot_prob([y_pred[bi], y_true[bi]], ["pred", "true"]))], "epoch": epoch+i_batch/len(self.data_loader)})
 
                 # inference
                 if hasattr(self, "inference_gap"):
@@ -173,13 +198,11 @@ class Trainer(object):
                         img = self.graph(z=None, y_onehot=y_onehot, eps_std=0.5, reverse=True)
                         # img = torch.clamp(img, min=0, max=1.0)
                         for bi in range(min([len(img), 4])):
-                            self.writer.add_image("2_sample/{}".format(bi), img[bi], self.global_step)
-
-                if self.global_step == 0:
-                    subprocess.run('nvidia-smi')
+                            # self.writer.add_image("2_sample/{}".format(bi), img[bi], self.global_step)
+                            wandb.log({"2_sample/{}".format(bi): [wandb.Image(img[bi])], "epoch": epoch+i_batch/len(self.data_loader)})
 
                 # global step
                 self.global_step += 1
 
-        self.writer.export_scalars_to_json(os.path.join(self.log_dir, "all_scalars.json"))
-        self.writer.close()
+        # self.writer.export_scalars_to_json(os.path.join(self.log_dir, "all_scalars.json"))
+        # self.writer.close()

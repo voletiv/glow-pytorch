@@ -12,7 +12,7 @@
         "flow_coupling": "affine",
         "LU_decomposed": false,
         "learn_top": false,
-        "y_condition": false,
+        "y_condition": true,
         "y_classes": 10
     },
     "Criterion" : {
@@ -42,8 +42,8 @@
         "data": "cuda:0"
     },
     "Train": {
-        "batch_size": 2,
-        "num_batches": 1000000,
+        "batch_size": 32,
+        "num_batches": 3000,
         "max_grad_clip": 5,
         "max_grad_norm": 100,
         "max_checkpoints": 20,
@@ -52,6 +52,7 @@
         "scalar_log_gap": 50,
         "plot_gap": 50,
         "inference_gap": 50,
+        "n_image_samples": 20,
         "warm_start": "",
         "weight_y": 0.5
     },

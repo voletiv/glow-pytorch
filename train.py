@@ -1,15 +1,15 @@
 """Train script.
 
 Usage:
-    train.py <hparams> <dataset> <dataset_root>
+    train.py <hparams> <dataset> <dataset_root> <name>
 """
 import os
 import vision
 from docopt import docopt
 from torchvision import transforms
 from glow.builder import build
-from glow.trainer import Trainer
 from glow.config import JsonConfig
+from glow.trainer_wandb import Trainer
 
 
 if __name__ == "__main__":
@@ -17,6 +17,7 @@ if __name__ == "__main__":
     hparams = args["<hparams>"]
     dataset = args["<dataset>"]
     dataset_root = args["<dataset_root>"]
+    name = args["<name>"]
     assert dataset in vision.Datasets, (
         "`{}` is not supported, use `{}`".format(dataset, vision.Datasets.keys()))
     assert os.path.exists(dataset_root), (
@@ -34,5 +35,5 @@ if __name__ == "__main__":
     built = build(hparams, True)
     dataset = dataset(dataset_root, transform=transform)
     # begin to train
-    trainer = Trainer(**built, dataset=dataset, hparams=hparams)
+    trainer = Trainer(**built, dataset=dataset, hparams=hparams, name=name)
     trainer.train()

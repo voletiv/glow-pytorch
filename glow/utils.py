@@ -53,7 +53,7 @@ def get_proper_device(devices, verbose=True):
 
 
 def _file_at_step(step):
-    return "save_{}k{}.pkg".format(int(step // 1000), int(step % 1000))
+    return "ckpt_{:03d}k{:03d}.pkg".format(int(step // 1000), int(step % 1000))
 
 
 def _file_best():
@@ -81,7 +81,7 @@ def save(global_step, graph, optim, criterion_dict=None, pkg_dir="", is_best=Fal
     if max_checkpoints is not None:
         history = []
         for file_name in os.listdir(pkg_dir):
-            if re.search("save_\d*k\d*\.pkg", file_name):
+            if re.search("ckpt_\d*k\d*\.pkg", file_name):
                 digits = file_name.replace("save_", "").replace(".pkg", "").split("k")
                 number = int(digits[0]) * 1000 + int(digits[1])
                 history.append(number)
