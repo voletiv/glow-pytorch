@@ -1,6 +1,6 @@
 {
     "Dir": {
-        "log_root": "results/mnist"
+        "log_root": "results/mnist_svhn"
     },
     "Glow" : {
         "image_shape": [32, 32, 3],
@@ -12,14 +12,14 @@
         "flow_coupling": "affine",
         "LU_decomposed": false,
         "learn_top": false,
-        "y_condition": false,
-        "y_classes": 10
+        "y_condition": true,
+        "y_classes": 2
     },
     "Criterion" : {
         "y_condition": "multi-classes"
     },
     "Data" : {
-        "center_crop": 28,
+        "center_crop": 32,
         "resize": 32
     },
     "Optim": {
@@ -43,7 +43,7 @@
     },
     "Train": {
         "batch_size": 128,
-        "num_batches": 3000,
+        "num_batches": 5000,
         "max_grad_clip": 5,
         "max_grad_norm": 100,
         "max_checkpoints": 20,

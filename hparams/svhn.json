@@ -12,7 +12,7 @@
         "flow_coupling": "affine",
         "LU_decomposed": false,
         "learn_top": false,
-        "y_condition": true,
+        "y_condition": false,
         "y_classes": 10
     },
     "Criterion" : {
@@ -43,7 +43,7 @@
     },
     "Train": {
         "batch_size": 128,
-        "num_batches": 3000,
+        "num_batches": 5000,
         "max_grad_clip": 5,
         "max_grad_norm": 100,
         "max_checkpoints": 20,
