@@ -3,6 +3,6 @@ from .datasets import CelebADataset, MNISTDataset, SVHNDataset, MNIST_SVHN_Datas
 Datasets = {
     "celeba": CelebADataset,
     "mnist": MNISTDataset,
-    "svhn": SVHNDataset
+    "svhn": SVHNDataset,
     "mnist_svhn": MNIST_SVHN_Dataset
 }
