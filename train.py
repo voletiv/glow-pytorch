@@ -1,7 +1,7 @@
 """Train script.
 
 Usage:
-    train.py <hparams> <dataset> <dataset_root> <name>
+    train.py <hparams> <dataset_name> <dataset_root> <name>
 """
 from comet_ml import Experiment
 
@@ -17,17 +17,17 @@ from glow.trainer_cometml import Trainer
 if __name__ == "__main__":
     args = docopt(__doc__)
     hparams = args["<hparams>"]
-    dataset = args["<dataset>"]
+    dataset_name = args["<dataset_name>"]
     dataset_root = args["<dataset_root>"]
     name = args["<name>"]
-    assert dataset in vision.Datasets, (
-        "`{}` is not supported, use `{}`".format(dataset, vision.Datasets.keys()))
+    assert dataset_name in vision.Datasets, (
+        "`{}` is not supported, use `{}`".format(dataset_name, vision.Datasets.keys()))
     assert os.path.exists(dataset_root), (
         "Failed to find root dir `{}` of dataset.".format(dataset_root))
     assert os.path.exists(hparams), (
         "Failed to find hparams josn `{}`".format(hparams))
     hparams = JsonConfig(hparams)
-    dataset = vision.Datasets[dataset]
+    dataset_class = vision.Datasets[dataset_name]
     # set transform of dataset
     transform = transforms.Compose([
         transforms.CenterCrop(hparams.Data.center_crop),
@@ -35,7 +35,7 @@ if __name__ == "__main__":
         transforms.ToTensor()])
     # build graph and dataset
     built = build(hparams, True)
-    dataset = dataset(dataset_root, transform=transform)
+    dataset = dataset_class(dataset_root, transform=transform)
     # begin to train
-    trainer = Trainer(**built, dataset=dataset, hparams=hparams, name=name)
+    trainer = Trainer(**built, dataset=dataset, hparams=hparams, name=name, dataset_name=dataset_name)
     trainer.train()

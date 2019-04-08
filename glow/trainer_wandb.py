@@ -21,7 +21,7 @@ import wandb
 class Trainer(object):
     def __init__(self, graph, optim, lrschedule, loaded_step,
                  devices, data_device,
-                 dataset, hparams, name):
+                 dataset, hparams, name, dataset_name):
         self.hparams = hparams
         self.name = name
         if isinstance(hparams, str):
@@ -86,6 +86,9 @@ class Trainer(object):
         for key in hparams:
             for in_key in hparams[key]:
                 hparams_dict[in_key] = hparams[key][in_key]
+                if isinstance(hparams[key][in_key], dict):
+                    for in_in_key in hparams[key][in_key]:
+                        hparams_dict[in_in_key] = hparams[key][in_key][in_in_key]
         # Also
         hparams_dict['name'] = self.name
         hparams_dict['date'] = self.date

@@ -21,9 +21,10 @@ from . import thops
 class Trainer(object):
     def __init__(self, graph, optim, lrschedule, loaded_step,
                  devices, data_device,
-                 dataset, hparams, name):
+                 dataset, hparams, name, dataset_name):
         self.hparams = hparams
         self.name = name
+        self.dataset_name = dataset_name
         if isinstance(hparams, str):
             hparams = JsonConfig(hparams)
         # set members
@@ -86,8 +87,12 @@ class Trainer(object):
         for key in hparams:
             for in_key in hparams[key]:
                 hparams_dict[in_key] = hparams[key][in_key]
+                if isinstance(hparams[key][in_key], dict):
+                    for in_in_key in hparams[key][in_key]:
+                        hparams_dict[in_in_key] = hparams[key][in_key][in_in_key]
         # Also
         hparams_dict['name'] = self.name
+        hparams_dict['dataset_name'] = self.dataset_name
         hparams_dict['date'] = self.date
         hparams_dict['run_name'] = self.date + "_" + self.name
         hparams_dict['log_dir'] = self.log_dir
@@ -101,7 +106,7 @@ class Trainer(object):
         experiment = Experiment(api_key="B6hzNydshIpZSG2Xi9BDG9gdG",
                                 project_name="glow-mnist", workspace="voletiv")
         hparams_dict = self.hparams_dict()
-        experiment.log_multiple_params(hparams_dict)
+        experiment.log_parameters(hparams_dict)
 
         # set to training state
         self.graph.train()

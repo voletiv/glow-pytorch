@@ -17,7 +17,7 @@ from . import thops
 class Trainer(object):
     def __init__(self, graph, optim, lrschedule, loaded_step,
                  devices, data_device,
-                 dataset, hparams, name):
+                 dataset, hparams, name, dataset_name):
         self.name = name
         if isinstance(hparams, str):
             hparams = JsonConfig(hparams)
