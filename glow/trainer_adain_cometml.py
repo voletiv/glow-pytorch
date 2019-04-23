@@ -104,7 +104,7 @@ class Trainer(object):
         # comet_ml
         # Create an experiment
         experiment = Experiment(api_key="B6hzNydshIpZSG2Xi9BDG9gdG",
-                                project_name="glow-mnist", workspace="voletiv")
+                                project_name="glow-adain", workspace="voletiv")
         hparams_dict = self.hparams_dict()
         experiment.log_parameters(hparams_dict)
 
@@ -151,7 +151,7 @@ class Trainer(object):
 
                 # at first time, initialize ActNorm
                 if self.global_step == 0:
-                    self.graph(x[:self.batch_size // len(self.devices), ...],
+                    self.graph(x1[:self.batch_size // len(self.devices), ...],
                                y_onehot[:self.batch_size // len(self.devices), ...] if y_onehot is not None else None)
 
                 # parallel
@@ -225,8 +225,10 @@ class Trainer(object):
 
                     # plot images
                     # self.writer.add_image("0_reverse/{}".format(bi), torch.cat((img[bi], batch["x"][bi]), dim=1), self.global_step)
-                    vutils.save_image(torch.stack([torch.cat((img[bi], batch["x"][bi]), dim=1) for bi in range(min([len(img), self.n_image_samples]))]), '/tmp/vikramvoleti.png', nrow=10)
-                    experiment.log_image('/tmp/vikramvoleti_rev.png', file_name="0_reverse")
+                    vutils.save_image(torch.stack([torch.cat((img[bi], batch["x1"][bi]), dim=1) for bi in range(min([len(img), self.n_image_samples]))]), '/tmp/vikramvoleti.png', nrow=10)
+                    experiment.log_image('/tmp/vikramvoleti_rev.png', name="0_reverse1")
+                    vutils.save_image(torch.stack([torch.cat((img[bi], batch["x2"][bi]), dim=1) for bi in range(min([len(img), self.n_image_samples]))]), '/tmp/vikramvoleti.png', nrow=10)
+                    experiment.log_image('/tmp/vikramvoleti_rev.png', name="0_reverse2")
 
                     # plot preds
                     # for bi in range(min([len(img), self.n_image_samples])):

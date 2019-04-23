@@ -21,8 +21,8 @@ class AdaINDataset(Dataset):
     def __getitem__(self, index):
         dataset1_index = index
         dataset2_index = np.random.randint(self.len_dataset2)
-        x1 = self.dataset1.__getitem__(dataset1_index)
-        x2 = self.dataset2.__getitem__(dataset2_index)
+        x1, _ = self.dataset1.__getitem__(dataset1_index)
+        x2, _ = self.dataset2.__getitem__(dataset2_index)
         return {
             "x1": x1,
             "x2": x2,
