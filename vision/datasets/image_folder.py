@@ -17,6 +17,8 @@ class ImageFolderDataset(Dataset):
 
     def __getitem__(self, index):
         x, y = self.dataset.__getitem__(index)
+        # Add instance noise ~ U(0,1)
+        x = (x*255. + torch.rand(x.size()))/256.
         y_onehot = [0.]*self.num_classes
         y_onehot[y] = 1.
         return {

@@ -18,6 +18,7 @@ class MNISTDataset(Dataset):
     def __getitem__(self, index):
         x, y = self.dataset.__getitem__(index)
         x = torch.cat((x, x, x), dim=0)
+        x = (x*255. + torch.rand(x.size()))/256.
         y_onehot = [0.]*self.num_classes
         y_onehot[y] = 1.
         return {
