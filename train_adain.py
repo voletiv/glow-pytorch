@@ -27,10 +27,12 @@ if __name__ == "__main__":
     #     "`{}` is not supported, use `{}`".format(dataset_name, vision.Datasets.keys()))
 
     # Check
-    assert os.path.exists(dataset_root), (
-        "Failed to find root dir `{}` of dataset.".format(dataset_root))
     assert os.path.exists(hparams), (
-        "Failed to find hparams josn `{}`".format(hparams))
+        "Failed to find hparams json `{}`".format(hparams))
+    assert os.path.exists(dataset1_root), (
+        "Failed to find root dir of dataset1: `{}`".format(dataset1_root))
+    assert os.path.exists(dataset1_root), (
+        "Failed to find root dir of dataset2: `{}`".format(dataset2_root))
 
     # Build graph
     hparams = JsonConfig(hparams)

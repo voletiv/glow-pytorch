@@ -19,8 +19,8 @@ class AdaINDataset(Dataset):
         self.len_dataset2 = len(self.dataset2)
 
     def __getitem__(self, index):
-        dataset1_index = index // self.len_dataset2
-        dataset2_index = index % self.len_dataset2
+        dataset1_index = index
+        dataset2_index = np.random.randint(self.len_dataset2)
         x1 = self.dataset1.__getitem__(dataset1_index)
         x2 = self.dataset2.__getitem__(dataset2_index)
         return {
@@ -29,4 +29,4 @@ class AdaINDataset(Dataset):
         }
 
     def __len__(self):
-        return self.len_dataset1*self.len_dataset2
+        return self.len_dataset1
