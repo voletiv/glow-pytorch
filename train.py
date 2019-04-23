@@ -38,6 +38,7 @@ if __name__ == "__main__":
     transform = transforms.Compose([
         transforms.Resize(hparams.Data.resize),
         transforms.CenterCrop(hparams.Data.center_crop),
+        transforms.RandomHorizontalFlip(),
         transforms.ToTensor()])
     dataset_class = vision.Datasets[dataset_name]
     dataset = dataset_class(dataset_root, transform=transform)

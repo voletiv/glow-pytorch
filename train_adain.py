@@ -42,6 +42,7 @@ if __name__ == "__main__":
     transform = transforms.Compose([
         transforms.Resize(hparams.Data.resize),
         transforms.CenterCrop(hparams.Data.center_crop),
+        transforms.RandomHorizontalFlip(),
         transforms.ToTensor()])
 
     # Build dataset
