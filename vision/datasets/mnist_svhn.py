@@ -32,12 +32,12 @@ class MNIST_SVHN_Dataset(Dataset):
     def __getitem__(self, index):
         y_onehot = [0.]*2
         y_class_onehot = [0.]*10
-        if index < self.mnist_len:
-            x, y = self.mnist_dataset.__getitem__(index)
+        if np.random.sample() < 0.3:
+            x, y = self.mnist_dataset.__getitem__(index % self.mnist_len)
             x = torch.cat((x, x, x), dim=0)
             y_onehot[0] = 1.
         else:
-            x, y = self.svhn_dataset.__getitem__(index - self.mnist_len)
+            x, y = self.svhn_dataset.__getitem__(index % self.svhn_len)
             y_onehot[1] = 1.
         y_class_onehot[y] = 1.
         return {
@@ -47,4 +47,4 @@ class MNIST_SVHN_Dataset(Dataset):
         }
 
     def __len__(self):
-        return len(self.mnist_dataset) + len(self.svhn_dataset)
+        return max([self.mnist_len, self.svhn_len])

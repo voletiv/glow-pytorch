@@ -223,7 +223,7 @@ class Trainer(object):
                     # plot images
                     # self.writer.add_image("0_reverse/{}".format(bi), torch.cat((img[bi], batch["x"][bi]), dim=1), self.global_step)
                     vutils.save_image(torch.stack([torch.cat((img[bi], batch["x"][bi]), dim=1) for bi in range(min([len(img), self.n_image_samples]))]), '/tmp/vikramvoleti.png', nrow=10)
-                    experiment.log_image('/tmp/vikramvoleti.png', file_name="0_reverse")
+                    experiment.log_image('/tmp/vikramvoleti_rev.png', file_name="0_reverse")
 
                     # plot preds
                     # for bi in range(min([len(img), self.n_image_samples])):
@@ -246,7 +246,7 @@ class Trainer(object):
                             img = self.graph(z=None, y_onehot=inference_y_onehot, eps_std=0.5, reverse=True)
                         # grid
                         vutils.save_image(img[:min([len(img), self.n_image_samples])], '/tmp/vikramvoleti.png', nrow=10)
-                        experiment.log_image('/tmp/vikramvoleti.png', file_name="1_samples")
+                        experiment.log_image('/tmp/vikramvoleti_sam.png', file_name="1_samples")
                         # img = torch.clamp(img, min=0, max=1.0)
                         # for bi in range(min([len(img), n_images])):
                         #     # self.writer.add_image("2_sample/{}".format(bi), img[bi], self.global_step)
