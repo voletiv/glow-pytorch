@@ -24,8 +24,8 @@ class AdaINDataset(Dataset):
         x1, _ = self.dataset1.__getitem__(dataset1_index)
         x2, _ = self.dataset2.__getitem__(dataset2_index)
         # Add instance noise ~ U(0,1)
-        x1 = (x1*255. + torch.rand(x1.size()))/256.
-        x2 = (x2*255. + torch.rand(x2.size()))/256.
+        # x1 = (x1*255. + torch.rand(x1.size()))/256.
+        # x2 = (x2*255. + torch.rand(x2.size()))/256.
         return {
             "x1": x1,
             "x2": x2,

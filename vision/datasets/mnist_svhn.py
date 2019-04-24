@@ -39,8 +39,8 @@ class MNIST_SVHN_Dataset(Dataset):
         else:
             x, y = self.svhn_dataset.__getitem__(index % self.svhn_len)
             y_onehot[1] = 1.
-        # Add instance noise ~ U(0,1)
-        x = (x*255. + torch.rand(x.size()))/256.
+        # # Add instance noise ~ U(0,1)
+        # x = (x*255. + torch.rand(x.size()))/256.
         y_class_onehot[y] = 1.
         return {
             "x": x,
