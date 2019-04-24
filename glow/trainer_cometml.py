@@ -222,8 +222,8 @@ class Trainer(object):
 
                     # plot images
                     # self.writer.add_image("0_reverse/{}".format(bi), torch.cat((img[bi], batch["x"][bi]), dim=1), self.global_step)
-                    vutils.save_image(torch.stack([torch.cat((img[bi], batch["x"][bi]), dim=1) for bi in range(min([len(img), self.n_image_samples]))]), '/tmp/vikramvoleti.png', nrow=10)
-                    experiment.log_image('/tmp/vikramvoleti_rev.png', file_name="0_reverse")
+                    vutils.save_image(torch.stack([torch.cat((img[bi], batch["x"][bi]), dim=1) for bi in range(min([len(img), self.n_image_samples]))]), '/tmp/vikramvoleti_rev.png', nrow=10)
+                    experiment.log_image('/tmp/vikramvoleti_rev.png', name="0_reverse")
 
                     # plot preds
                     # for bi in range(min([len(img), self.n_image_samples])):
@@ -235,18 +235,20 @@ class Trainer(object):
                 # inference
                 if hasattr(self, "inference_gap"):
                     if self.global_step % self.inference_gap == 0:
-                        try:
-                            img = self.graph(z=None, y_onehot=inference_y_onehot, eps_std=0.5, reverse=True)
-                        except NameError:
-                            inference_y_onehot = torch.zeros_like(y_onehot, device=torch.device('cpu'))
-                            for i in range(inference_y_onehot.size(0)):
-                                inference_y_onehot[i, (i % inference_y_onehot.size(1))] = 1.
-                            # now
-                            inference_y_onehot = inference_y_onehot.to(y_onehot.device)
-                            img = self.graph(z=None, y_onehot=inference_y_onehot, eps_std=0.5, reverse=True)
+                        if self.global_step == 0:
+                            if y_onehot is not None:
+                                inference_y_onehot = torch.zeros_like(y_onehot, device=torch.device('cpu'))
+                                for i in range(inference_y_onehot.size(0)):
+                                    inference_y_onehot[i, (i % inference_y_onehot.size(1))] = 1.
+                                # Take to device
+                                inference_y_onehot = inference_y_onehot.to(y_onehot.device)
+                            else:
+                                inference_y_onehot = None
+                        # Infer
+                        img = self.graph(z=None, y_onehot=inference_y_onehot, eps_std=0.5, reverse=True)
                         # grid
-                        vutils.save_image(img[:min([len(img), self.n_image_samples])], '/tmp/vikramvoleti.png', nrow=10)
-                        experiment.log_image('/tmp/vikramvoleti_sam.png', file_name="1_samples")
+                        vutils.save_image(img[:min([len(img), self.n_image_samples])], '/tmp/vikramvoleti_sam.png', nrow=10)
+                        experiment.log_image('/tmp/vikramvoleti_sam.png', name="1_samples")
                         # img = torch.clamp(img, min=0, max=1.0)
                         # for bi in range(min([len(img), n_images])):
                         #     # self.writer.add_image("2_sample/{}".format(bi), img[bi], self.global_step)
