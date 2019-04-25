@@ -212,3 +212,18 @@ def plot_prob(done, title="", file_name=None, plot_dir=None):
         ax.grid(which="minor", color="g", linestyle='-.', linewidth=1)
         ax.invert_yaxis()
     return __draw(fig, file_name, plot_dir)
+
+
+def rot_collate_fn(batch):
+    keys = batch[0].keys()
+    new_batch = {}
+    for key in keys:
+        x = [i[key] for i in batch]
+        if isinstance(x[0], torch.Tensor):
+            new_batch[key] = torch.stack(x).view([len(x)*x[0].shape[0], *x[0].shape[1:]])
+        elif isinstance(x[0], np.ndarray):
+            new_batch[key] = torch.from_numpy(np.concatenate(x)).view([len(x)*x[0].shape[0], *x[0].shape[1:]])
+        else:
+            print("[glow.utils.rot_collate_fn] Type not torch.Tensor or np.ndarray! Type:", type(x[0]))
+    # Return
+    return new_batch

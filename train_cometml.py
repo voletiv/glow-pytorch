@@ -1,7 +1,7 @@
 """Train script.
 
 Usage:
-    train.py <hparams> <dataset_name> <dataset_root> <name>
+    train.py <hparams> <dataset_name> <dataset_root> <cometml_project_name> <name>
 """
 from comet_ml import Experiment
 
@@ -11,7 +11,7 @@ from docopt import docopt
 from torchvision import transforms
 from glow.builder import build
 from glow.config import JsonConfig
-from glow.trainer import Trainer
+from glow.trainer_cometml import Trainer
 
 
 if __name__ == "__main__":
@@ -21,6 +21,7 @@ if __name__ == "__main__":
     dataset_name = args["<dataset_name>"]
     dataset_root = args["<dataset_root>"]
     name = args["<name>"]
+    cometml_project_name = args["<cometml_project_name>"]
 
     # Checks
     assert dataset_name in vision.Datasets, (
@@ -45,4 +46,4 @@ if __name__ == "__main__":
 
     # Begin to train
     trainer = Trainer(**built, dataset=dataset, hparams=hparams, name=name, dataset_name=dataset_name)
-    trainer.train()
+    trainer.train(cometml_project_name)

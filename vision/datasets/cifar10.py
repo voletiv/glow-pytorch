@@ -21,10 +21,26 @@ class CIFAR10Dataset(Dataset):
         # x = (x*255. + torch.rand(x.size()))/256.
         y_onehot = [0.]*self.num_classes
         y_onehot[y] = 1.
-        return {
-            "x": x,
-            "y_onehot": np.asarray(y_onehot, dtype=np.float32)
-        }
+        y_onehot = np.asarray(y_onehot, dtype=np.float32)
+        if self.rot:
+            x_0 = x
+            x_90 = x.transpose(1, 2).flip(1)
+            x_180 = x.flip(1).flip(2)
+            x_270 = x.transpose(1, 2).flip(2)
+            x = torch.stack([x_0, x_90, x_180, x_270])
+            y_rot = np.zeros((4, 4))
+            y_rot[np.arange(4), np.arange(4)] = 1.
+            y_onehot = y_onehot.reshape(1, -1).repeat(4, 0)
+            return {
+                "x": x,
+                "y_rot": y_rot,
+                "y_onehot": y_onehot
+            }
+        else:
+            return {
+                "x": x,
+                "y_onehot": y_onehot
+            }
 
     def __len__(self):
         return len(self.dataset)
