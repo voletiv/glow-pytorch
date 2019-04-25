@@ -154,12 +154,13 @@ class Trainer(object):
                         assert "y2" in batch, "single-class ask for `y2` (torch.LongTensor indexes)"
                         y1 = batch["y1"]
                         y2 = batch["y2"]
-                        y_onehot1 = thops.onehot(y1, num_classes=self.y_classes1)
+                        y_onehot1 = thops.onehot(y1, num_classes=self.y_classes)
+                        y_onehot2 = thops.onehot(y2, num_classes=self.y_classes)
 
                 # at first time, initialize ActNorm
                 if self.global_step == 0:
                     self.graph(x1[:self.batch_size // len(self.devices), ...],
-                               y_onehot[:self.batch_size // len(self.devices), ...] if y_onehot is not None else None)
+                               y_onehot1[:self.batch_size // len(self.devices), ...] if y_onehot1 is not None else None)
 
                 # parallel
                 if len(self.devices) > 1 and not hasattr(self.graph, "module"):
@@ -167,8 +168,8 @@ class Trainer(object):
                     self.graph = torch.nn.parallel.DataParallel(self.graph, self.devices, self.devices[0])
 
                 # forward phase
-                z1, nll1, y_logits1, intermediate_zs1 = self.graph(x=x1, y_onehot=y_onehot)
-                z2, nll2, y_logits2, intermediate_zs2 = self.graph(x=x2, y_onehot=y_onehot)
+                z1, nll1, y_logits1, intermediate_zs1 = self.graph(x=x1, y_onehot=y_onehot1)
+                z2, nll2, y_logits2, intermediate_zs2 = self.graph(x=x2, y_onehot=y_onehot2)
 
                 # loss_generative
                 loss_generative = Glow.loss_generative(nll1) + Glow.loss_generative(nll2)
@@ -196,12 +197,18 @@ class Trainer(object):
                 z1_new = (content - content_mean)/content_std*style_std + style_mean
 
                 # Reverse with new z
-                x_new1, intermediate_zs_new1 = self.graph(z=z1_new, y_onehot=y_onehot)
+                x_new1, intermediate_zs_new1 = self.graph(z=z1_new, y_onehot=y_onehot1, reverse=True)
 
                 # Style loss
-                loss_style = torch.mean([torch.pow(izs2.mean(2).mean(2) - izs_new1.mean(2).mean(2), 2)\
-                                         + torch.pow(izs2.std(2).std(2) - izs_new1.std(2).std(2), 2)\
-                                         for izs2, izs_new1 in zip(intermediate_zs2, intermediate_zs_new1[::-1])])
+                loss_style = torch.stack([torch.mean(
+                                            torch.pow(
+                                                izs2.mean(2).mean(2) - izs_new1.mean(2).mean(2),
+                                                2)\
+                                            + torch.pow(
+                                                izs2.view(izs2.shape[0], izs2.shape[1], -1).std(2) - izs_new1.view(izs_new1.shape[0], izs_new1.shape[1], -1).std(2),
+                                                2),
+                                            dim=1)\
+                                         for izs2, izs_new1 in zip(intermediate_zs2, intermediate_zs_new1[::-1])]).mean()
 
                 # Content-2, Style-1
                 content, style = z2, z1
@@ -215,12 +222,18 @@ class Trainer(object):
                 z2_new = (content - content_mean)/content_std*style_std + style_mean
 
                 # Reverse with new z
-                x_new2, intermediate_zs_new2 = self.graph(z=z2_new, y_onehot=y_onehot)
+                x_new2, intermediate_zs_new2 = self.graph(z=z2_new, y_onehot=y_onehot2, reverse=True)
 
                 # Style loss
-                loss_style += torch.mean([torch.pow(izs1.mean(2).mean(2) - izs_new2.mean(2).mean(2), 2)\
-                                          + torch.pow(izs1.std(2).std(2) - izs_new2.std(2).std(2), 2)\
-                                          for izs1, izs_new2 in zip(intermediate_zs1, intermediate_zs_new2[::-1])])
+                loss_style += torch.stack([torch.mean(
+                                            torch.pow(
+                                                izs1.mean(2).mean(2) - izs_new2.mean(2).mean(2),
+                                                2)\
+                                            + torch.pow(
+                                                izs1.view(izs1.shape[0], izs1.shape[1], -1).std(2) - izs_new2.view(izs_new2.shape[0], izs_new2.shape[1], -1).std(2),
+                                                2),
+                                            dim=1)\
+                                         for izs1, izs_new2 in zip(intermediate_zs1, intermediate_zs_new2[::-1])]).mean()
 
                 # total loss
                 loss = loss_generative + loss_style + loss_classes * self.weight_y
@@ -262,28 +275,32 @@ class Trainer(object):
 
                 # plot images
                 if self.global_step % self.plot_gaps == 0:
-                    img1 = self.graph(z=z1, y_onehot=y_onehot, reverse=True)
-                    img2 = self.graph(z=z2, y_onehot=y_onehot, reverse=True)
+                    img1, _ = self.graph(z=z1, y_onehot=y_onehot1, reverse=True)
+                    img2, _ = self.graph(z=z2, y_onehot=y_onehot2, reverse=True)
                     # img = torch.clamp(img, min=0, max=1.0)
 
                     if self.y_condition:
                         if self.y_criterion == "multi-classes":
-                            y_pred = torch.sigmoid(y_logits)
+                            y_pred1 = torch.sigmoid(y_logits1)
+                            y_pred2 = torch.sigmoid(y_logits2)
                         elif self.y_criterion == "single-class":
-                            y_pred = thops.onehot(torch.argmax(F.softmax(y_logits, dim=1), dim=1, keepdim=True),
+                            y_pred1 = thops.onehot(torch.argmax(F.softmax(y_logits1, dim=1), dim=1, keepdim=True),
                                                   self.y_classes)
-                        y_true = y_onehot
+                            y_pred2 = thops.onehot(torch.argmax(F.softmax(y_logits2, dim=1), dim=1, keepdim=True),
+                                                  self.y_classes)
+                        y_true1 = y_onehot1
+                        y_true2 = y_onehot2
 
                     # plot images
                     # self.writer.add_image("0_reverse/{}".format(bi), torch.cat((img[bi], batch["x"][bi]), dim=1), self.global_step)
-                    vutils.save_image(torch.stack([torch.cat((img1[bi], batch["x1"][bi]), dim=1) for bi in range(min([len(img1), self.n_image_samples]))]), '/tmp/vikramvoleti_rev1.png', nrow=10)
+                    vutils.save_image(torch.stack([torch.cat((img1[i], batch["x1"][i]), dim=1) for i in range(min([len(img1), self.n_image_samples]))]), '/tmp/vikramvoleti_rev1.png', nrow=10)
                     experiment.log_image('/tmp/vikramvoleti_rev1.png', name="0_reverse1")
-                    vutils.save_image(torch.stack([torch.cat((img2[bi], batch["x2"][bi]), dim=1) for bi in range(min([len(img2), self.n_image_samples]))]), '/tmp/vikramvoleti_rev2.png', nrow=10)
+                    vutils.save_image(torch.stack([torch.cat((img2[i], batch["x2"][i]), dim=1) for i in range(min([len(img2), self.n_image_samples]))]), '/tmp/vikramvoleti_rev2.png', nrow=10)
                     experiment.log_image('/tmp/vikramvoleti_rev2.png', name="0_reverse2")
 
-                    vutils.save_image(torch.stack([torch.cat((x_new1[i], batch["x1"][i]), dim=1) for i in range(min([len(x_new1), self.n_image_samples]))]), '/tmp/vikramvoleti_new1.png', nrow=10)
+                    vutils.save_image(torch.stack([torch.cat((x_new1[i], batch["x1"][i], batch["x2"][i]), dim=1) for i in range(min([len(x_new1), self.n_image_samples]))]), '/tmp/vikramvoleti_new1.png', nrow=10)
                     experiment.log_image('/tmp/vikramvoleti_new1.png', name="1_new1")
-                    vutils.save_image(torch.stack([torch.cat((x_new2[i], batch["x2"][i]), dim=1) for i in range(min([len(x_new2), self.n_image_samples]))]), '/tmp/vikramvoleti_new2.png', nrow=10)
+                    vutils.save_image(torch.stack([torch.cat((x_new2[i], batch["x2"][i], batch["x1"][i]), dim=1) for i in range(min([len(x_new2), self.n_image_samples]))]), '/tmp/vikramvoleti_new2.png', nrow=10)
                     experiment.log_image('/tmp/vikramvoleti_new2.png', name="1_new2")
 
                 # # inference

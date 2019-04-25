@@ -1,7 +1,7 @@
 """Train script.
 
 Usage:
-    train.py <hparams> <dataset1_root> <dataset2_root> <name>
+    train_adain_cometml.py <hparams> <dataset1_root> <dataset2_root> <name>
 """
 from comet_ml import Experiment
 

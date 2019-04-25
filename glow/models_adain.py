@@ -158,7 +158,7 @@ class FlowNet(nn.Module):
             if isinstance(layer, modules.Split2d):
                 # intermediate_zs.append(z.detach.clone())
                 intermediate_zs.append(z)
-        return z, logdet, torch.stack(intermediate_zs)
+        return z, logdet, intermediate_zs
 
     def decode(self, z, eps_std=None):
         intermediate_zs = []
@@ -169,7 +169,7 @@ class FlowNet(nn.Module):
                 z, logdet = layer(z, logdet=0, reverse=True, eps_std=eps_std)
             else:
                 z, logdet = layer(z, logdet=0, reverse=True)
-        return z, torch.stack(intermediate_zs)
+        return z, intermediate_zs
 
 
 class Glow(nn.Module):
