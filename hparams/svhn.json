@@ -19,8 +19,8 @@
         "y_condition": "multi-classes"
     },
     "Data" : {
-        "center_crop": 32,
-        "resize": 32
+        "resize": 32,
+        "center_crop": 32
     },
     "Optim": {
         "name": "adam",
