@@ -1,3 +1,5 @@
+from comet_ml import Experiment
+
 import re
 import os
 import torch
@@ -5,17 +7,15 @@ import torch.nn.functional as F
 import datetime
 import numpy as np
 import subprocess
+import torchvision.utils as vutils
 
 from tqdm import tqdm
 # from tensorboardX import SummaryWriter
 from torch.utils.data import DataLoader
-from torchvision.utils import make_grid
-from .utils import save, load, plot_prob
+from .utils import save, load, plot_prob, rot_collate_fn
 from .config import JsonConfig
-from .models import Glow
+from .models_rot import Glow
 from . import thops
-
-import wandb
 
 
 class Trainer(object):
@@ -24,6 +24,7 @@ class Trainer(object):
                  dataset, hparams, name, dataset_name):
         self.hparams = hparams
         self.name = name
+        self.dataset_name = dataset_name
         if isinstance(hparams, str):
             hparams = JsonConfig(hparams)
         # set members
@@ -55,11 +56,13 @@ class Trainer(object):
         self.data_device = data_device
         # number of training batches
         self.batch_size = hparams.Train.batch_size
+        assert self.batch_size % 4 == 0, "Make sure batch_size is divisible by 4! Given: " + str(self.batch_size)
         self.data_loader = DataLoader(dataset,
-                                      batch_size=self.batch_size,
-                                    #   num_workers=8,
+                                      batch_size=self.batch_size//4,
+                                      # num_workers=8,
                                       shuffle=True,
-                                      drop_last=True)
+                                      drop_last=True,
+                                      collate_fn=rot_collate_fn)
         self.n_epoches = (hparams.Train.num_batches+len(self.data_loader)-1) // len(self.data_loader)
         self.global_step = 0
         # lr schedule
@@ -91,21 +94,21 @@ class Trainer(object):
                         hparams_dict[in_in_key] = hparams[key][in_key][in_in_key]
         # Also
         hparams_dict['name'] = self.name
+        hparams_dict['dataset_name'] = self.dataset_name
         hparams_dict['date'] = self.date
         hparams_dict['run_name'] = self.date + "_" + self.name
         hparams_dict['log_dir'] = self.log_dir
         hparams_dict['n_epoches'] = self.n_epoches
         return hparams_dict
 
-    def train(self):
+    def train(self, cometml_project_name="glow-mnist"):
 
-        # wandb
-        wandb.init(project="glow-mnist")
-        wandb.run.description = self.date + "_" + self.name
-        wandb.run.save()
+        # comet_ml
+        # Create an experiment
+        experiment = Experiment(api_key="B6hzNydshIpZSG2Xi9BDG9gdG",
+                                project_name=cometml_project_name, workspace="voletiv")
         hparams_dict = self.hparams_dict()
-        wandb.config.update(hparams_dict)
-        wandb.watch(self.graph)
+        experiment.log_parameters(hparams_dict)
 
         # set to training state
         self.graph.train()
@@ -117,6 +120,8 @@ class Trainer(object):
             progress = tqdm(self.data_loader)
             for i_batch, batch in enumerate(progress):
 
+                experiment.set_step(self.global_step)
+
                 # update learning rate
                 lr = self.lrschedule["func"](global_step=self.global_step,
                                              **self.lrschedule["args"])
@@ -127,12 +132,13 @@ class Trainer(object):
                 # log
                 if self.global_step % self.scalar_log_gaps == 0:
                     # self.writer.add_scalar("lr/lr", lr, self.global_step)
-                    wandb.log({"lr": lr, "epoch": epoch+i_batch/len(self.data_loader)}, step=self.global_step)
+                    experiment.log_metrics({"lr": lr, "epoch": epoch+i_batch/len(self.data_loader)})
 
                 # get batch data
                 for k in batch:
                     batch[k] = batch[k].to(self.data_device)
                 x = batch["x"]
+                y_rot = batch["y_rot"]
                 y = None
                 y_onehot = None
                 if self.y_condition:
@@ -155,10 +161,13 @@ class Trainer(object):
                     self.graph = torch.nn.parallel.DataParallel(self.graph, self.devices, self.devices[0])
 
                 # forward phase
-                z, nll, y_logits = self.graph(x=x, y_onehot=y_onehot)
+                z, nll, rot_logits, y_logits = self.graph(x=x, y_onehot=y_onehot)
 
                 # loss_generative
                 loss_generative = Glow.loss_generative(nll)
+
+                # loss_rot
+                loss_rotation = Glow.loss_multi_classes(rot_logits, y_rot)
 
                 # loss_classes
                 loss_classes = 0
@@ -168,16 +177,17 @@ class Trainer(object):
                                     Glow.loss_class(y_logits, y))
 
                 # total loss
-                loss = loss_generative + loss_classes * self.weight_y
+                loss = loss_generative + loss_rotation + loss_classes * self.weight_y
 
                 # log
                 if self.global_step % self.scalar_log_gaps == 0:
                     # self.writer.add_scalar("loss/loss_generative", loss_generative, self.global_step)
-                    wandb.log({"loss_generative": loss_generative}, step=self.global_step)
+                    experiment.log_metrics({"loss_generative": loss_generative,
+                                            "loss_rotation": loss_rotation,
+                                            "total_loss": loss})
                     if self.y_condition:
                         # self.writer.add_scalar("loss/loss_classes", loss_classes, self.global_step)
-                        wandb.log({"loss_classes": loss_classes}, step=self.global_step)
-                        wandb.log({"total_loss": loss}, step=self.global_step)
+                        experiment.log_metrics({"loss_classes": loss_classes})
 
                 # backward
                 self.graph.zero_grad()
@@ -191,7 +201,7 @@ class Trainer(object):
                     grad_norm = torch.nn.utils.clip_grad_norm_(self.graph.parameters(), self.max_grad_norm)
                     if self.global_step % self.scalar_log_gaps == 0:
                         # self.writer.add_scalar("grad_norm/grad_norm", grad_norm, self.global_step)
-                        wandb.log({"grad_norm": grad_norm}, step=self.global_step)
+                        experiment.log_metrics({"grad_norm": grad_norm})
 
                 # step
                 self.optim.step()
@@ -220,31 +230,33 @@ class Trainer(object):
 
                     # plot images
                     # self.writer.add_image("0_reverse/{}".format(bi), torch.cat((img[bi], batch["x"][bi]), dim=1), self.global_step)
-                    gen_images = make_grid(torch.stack([torch.cat((img[bi], batch["x"][bi]), dim=1) for bi in range(min([len(img), self.n_image_samples]))]), nrow=10)
-                    wandb.log({"0_decode": [wandb.Image(gen_images, caption="0_decode")]}, step=self.global_step)
+                    vutils.save_image(torch.stack([torch.cat((img[bi], batch["x"][bi]), dim=1) for bi in range(min([len(img), self.n_image_samples]))]), '/tmp/vikramvoleti_rev.png', nrow=10)
+                    experiment.log_image('/tmp/vikramvoleti_rev.png', name="0_reverse")
 
                     # plot preds
-                    for bi in range(min([len(img), self.n_image_samples])):
-                        # wandb.log({"0_reverse_{}".format(bi): [wandb.Image(torch.cat((img[bi], batch["x"][bi]), dim=1), caption="0_reverse/{}".format(bi))]}, step=self.global_step)
-                        if self.y_condition:
-                            # self.writer.add_image("1_prob/{}".format(bi), plot_prob([y_pred[bi], y_true[bi]], ["pred", "true"]), self.global_step)
-                            wandb.log({"1_prob_{}".format(bi): [wandb.Image(plot_prob([y_pred[bi], y_true[bi]], ["pred", "true"]))]}, step=self.global_step)
+                    # for bi in range(min([len(img), self.n_image_samples])):
+                    #     # wandb.log({"0_reverse_{}".format(bi): [wandb.Image(torch.cat((img[bi], batch["x"][bi]), dim=1), caption="0_reverse/{}".format(bi))]}, step=self.global_step)
+                    #     if self.y_condition:
+                    #         # self.writer.add_image("1_prob/{}".format(bi), plot_prob([y_pred[bi], y_true[bi]], ["pred", "true"]), self.global_step)
+                    #         wandb.log({"1_prob_{}".format(bi): [wandb.Image(plot_prob([y_pred[bi], y_true[bi]], ["pred", "true"]))]}, step=self.global_step)
 
                 # inference
                 if hasattr(self, "inference_gap"):
                     if self.global_step % self.inference_gap == 0:
-                        try:
-                            img = self.graph(z=None, y_onehot=inference_y_onehot, eps_std=0.5, reverse=True)
-                        except NameError:
-                            inference_y_onehot = torch.zeros_like(y_onehot, device=torch.device('cpu'))
-                            for i in range(inference_y_onehot.size(0)):
-                                inference_y_onehot[i, (i % inference_y_onehot.size(1))] = 1.
-                            # now
-                            inference_y_onehot = inference_y_onehot.to(y_onehot.device)
-                            img = self.graph(z=None, y_onehot=inference_y_onehot, eps_std=0.5, reverse=True)
+                        if self.global_step == 0:
+                            if y_onehot is not None:
+                                inference_y_onehot = torch.zeros_like(y_onehot, device=torch.device('cpu'))
+                                for i in range(inference_y_onehot.size(0)):
+                                    inference_y_onehot[i, (i % inference_y_onehot.size(1))] = 1.
+                                # Take to device
+                                inference_y_onehot = inference_y_onehot.to(y_onehot.device)
+                            else:
+                                inference_y_onehot = None
+                        # Infer
+                        img = self.graph(z=None, y_onehot=inference_y_onehot, eps_std=0.5, reverse=True)
                         # grid
-                        sampled_images = make_grid(img[:min([len(img), self.n_image_samples])], nrow=10)
-                        wandb.log({"2_sample": [wandb.Image(sampled_images, caption="2_sample")]}, step=self.global_step)
+                        vutils.save_image(img[:min([len(img), self.n_image_samples])], '/tmp/vikramvoleti_sam.png', nrow=10)
+                        experiment.log_image('/tmp/vikramvoleti_sam.png', name="1_samples")
                         # img = torch.clamp(img, min=0, max=1.0)
                         # for bi in range(min([len(img), n_images])):
                         #     # self.writer.add_image("2_sample/{}".format(bi), img[bi], self.global_step)

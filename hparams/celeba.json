@@ -16,7 +16,7 @@
         "y_classes": 40
     },
     "Criterion" : {
-        "y_condition": "multi-classes"
+        "y_criterion": "multi-classes"
     },
     "Data" : {
         "center_crop": 160,

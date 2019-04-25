@@ -69,7 +69,7 @@ class Trainer(object):
         # data relative
         self.y_classes = hparams.Glow.y_classes
         self.y_condition = hparams.Glow.y_condition
-        self.y_criterion = hparams.Criterion.y_condition
+        self.y_criterion = hparams.Criterion.y_criterion
         # Checkpoints
         assert self.y_criterion in ["multi-classes", "single-class"]
 
@@ -99,12 +99,12 @@ class Trainer(object):
         hparams_dict['n_epoches'] = self.n_epoches
         return hparams_dict
 
-    def train(self):
+    def train(self, cometml_project_name="glow-mnist"):
 
         # comet_ml
         # Create an experiment
         experiment = Experiment(api_key="B6hzNydshIpZSG2Xi9BDG9gdG",
-                                project_name="glow-mnist", workspace="voletiv")
+                                project_name=cometml_project_name, workspace="voletiv")
         hparams_dict = self.hparams_dict()
         experiment.log_parameters(hparams_dict)
 
@@ -134,6 +134,7 @@ class Trainer(object):
 
                 # get batch data
                 for k in batch:
+                    print(k, type(batch[k]))
                     batch[k] = batch[k].to(self.data_device)
                 x = batch["x"]
                 y = None
@@ -176,10 +177,10 @@ class Trainer(object):
                 # log
                 if self.global_step % self.scalar_log_gaps == 0:
                     # self.writer.add_scalar("loss/loss_generative", loss_generative, self.global_step)
-                    experiment.log_metrics({"loss_generative": loss_generative})
+                    experiment.log_metrics({"loss_generative": loss_generative, "total_loss": loss})
                     if self.y_condition:
                         # self.writer.add_scalar("loss/loss_classes", loss_classes, self.global_step)
-                        experiment.log_metrics({"loss_classes": loss_classes, "total_loss": loss})
+                        experiment.log_metrics({"loss_classes": loss_classes})
 
                 # backward
                 self.graph.zero_grad()

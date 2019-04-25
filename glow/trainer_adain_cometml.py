@@ -69,7 +69,7 @@ class Trainer(object):
         # data relative
         self.y_classes = hparams.Glow.y_classes
         self.y_condition = hparams.Glow.y_condition
-        self.y_criterion = hparams.Criterion.y_condition
+        self.y_criterion = hparams.Criterion.y_criterion
         # Checkpoints
         assert self.y_criterion in ["multi-classes", "single-class"]
 

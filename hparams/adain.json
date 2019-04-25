@@ -1,6 +1,6 @@
 {
     "Dir": {
-        "log_root": "/scratch/voletivi/glow/wikiart_128"
+        "log_root": "results/glow/wikiart_128"
     },
     "Glow" : {
         "image_shape": [128, 128, 3],
@@ -16,7 +16,7 @@
         "y_classes": 10
     },
     "Criterion" : {
-        "y_condition": "multi-classes"
+        "y_criterion": "multi-classes"
     },
     "Data" : {
         "resize": 128,
