@@ -46,6 +46,7 @@ class Trainer(object):
         self.max_checkpoints = hparams.Train.max_checkpoints
         # model relative
         self.graph = graph
+        self.output_shapes = self.graph.flow.output_shapes
         self.optim = optim
         self.weight_y = hparams.Train.weight_y
         # grad operation
@@ -99,12 +100,12 @@ class Trainer(object):
         hparams_dict['n_epoches'] = self.n_epoches
         return hparams_dict
 
-    def train(self):
+    def train(self, cometml_project_name="glow-adain"):
 
         # comet_ml
         # Create an experiment
         experiment = Experiment(api_key="B6hzNydshIpZSG2Xi9BDG9gdG",
-                                project_name="glow-adain", workspace="voletiv")
+                                project_name=cometml_project_name, workspace="voletiv")
         hparams_dict = self.hparams_dict()
         experiment.log_parameters(hparams_dict)
 
@@ -138,16 +139,22 @@ class Trainer(object):
 
                 x1 = batch["x1"]
                 x2 = batch["x2"]
-                y = None
-                y_onehot = None
+                y1 = None
+                y2 = None
+                y_onehot1 = None
+                y_onehot2 = None
                 if self.y_condition:
                     if self.y_criterion == "multi-classes":
-                        assert "y_onehot" in batch, "multi-classes ask for `y_onehot` (torch.FloatTensor onehot)"
-                        y_onehot = batch["y_onehot"]
+                        assert "y_onehot1" in batch, "multi-classes ask for `y_onehot1` (torch.FloatTensor onehot)"
+                        assert "y_onehot2" in batch, "multi-classes ask for `y_onehot2` (torch.FloatTensor onehot)"
+                        y_onehot1 = batch["y_onehot1"]
+                        y_onehot2 = batch["y_onehot2"]
                     elif self.y_criterion == "single-class":
-                        assert "y" in batch, "single-class ask for `y` (torch.LongTensor indexes)"
-                        y = batch["y"]
-                        y_onehot = thops.onehot(y, num_classes=self.y_classes)
+                        assert "y1" in batch, "single-class ask for `y1` (torch.LongTensor indexes)"
+                        assert "y2" in batch, "single-class ask for `y2` (torch.LongTensor indexes)"
+                        y1 = batch["y1"]
+                        y2 = batch["y2"]
+                        y_onehot1 = thops.onehot(y1, num_classes=self.y_classes1)
 
                 # at first time, initialize ActNorm
                 if self.global_step == 0:
@@ -160,8 +167,8 @@ class Trainer(object):
                     self.graph = torch.nn.parallel.DataParallel(self.graph, self.devices, self.devices[0])
 
                 # forward phase
-                z1, nll1, y_logits1 = self.graph(x=x1, y_onehot=y_onehot)
-                z2, nll2, y_logits2 = self.graph(x=x2, y_onehot=y_onehot)
+                z1, nll1, y_logits1, intermediate_zs1 = self.graph(x=x1, y_onehot=y_onehot)
+                z2, nll2, y_logits2, intermediate_zs2 = self.graph(x=x2, y_onehot=y_onehot)
 
                 # loss_generative
                 loss_generative = Glow.loss_generative(nll1) + Glow.loss_generative(nll2)
@@ -169,20 +176,63 @@ class Trainer(object):
                 # loss_classes
                 loss_classes = 0
                 if self.y_condition:
-                    loss_classes = (Glow.loss_multi_classes(y_logits, y_onehot)
+                    loss_classes = (Glow.loss_multi_classes(y_logits1, y_onehot1)
                                     if self.y_criterion == "multi-classes" else
-                                    Glow.loss_class(y_logits, y))
+                                    Glow.loss_class(y_logits1, y1))\
+                                    + (Glow.loss_multi_classes(y_logits2, y_onehot2)
+                                       if self.y_criterion == "multi-classes" else
+                                       Glow.loss_class(y_logits2, y2))
+
+                # AdaIN
+                # Content-1, Style-2
+                content, style = z1, z2
+                # content, style = z1.detach().clone(), z2.detach().clone()
+                content_to_calc = content.view(-1, self.output_shapes[-1][1], self.output_shapes[-1][2]*self.output_shapes[-1][3])
+                content_mean = content_to_calc.mean(2, keepdim=True).unsqueeze(-1)
+                content_std = content_to_calc.std(2, keepdim=True).unsqueeze(-1)
+                style_to_calc = style.view(-1, self.output_shapes[-1][1], self.output_shapes[-1][2]*self.output_shapes[-1][3])
+                style_mean = style_to_calc.mean(2, keepdim=True).unsqueeze(-1)
+                style_std = style_to_calc.std(2, keepdim=True).unsqueeze(-1)
+                z1_new = (content - content_mean)/content_std*style_std + style_mean
+
+                # Reverse with new z
+                x_new1, intermediate_zs_new1 = self.graph(z=z1_new, y_onehot=y_onehot)
+
+                # Style loss
+                loss_style = torch.mean([torch.pow(izs2.mean(2).mean(2) - izs_new1.mean(2).mean(2), 2)\
+                                         + torch.pow(izs2.std(2).std(2) - izs_new1.std(2).std(2), 2)\
+                                         for izs2, izs_new1 in zip(intermediate_zs2, intermediate_zs_new1[::-1])])
+
+                # Content-2, Style-1
+                content, style = z2, z1
+                # content, style = z2.detach().clone(), z1.detach().clone()
+                content_to_calc = content.view(-1, self.output_shapes[-1][1], self.output_shapes[-1][2]*self.output_shapes[-1][3])
+                content_mean = content_to_calc.mean(2, keepdim=True).unsqueeze(-1)
+                content_std = content_to_calc.std(2, keepdim=True).unsqueeze(-1)
+                style_to_calc = style.view(-1, self.output_shapes[-1][1], self.output_shapes[-1][2]*self.output_shapes[-1][3])
+                style_mean = style_to_calc.mean(2, keepdim=True).unsqueeze(-1)
+                style_std = style_to_calc.std(2, keepdim=True).unsqueeze(-1)
+                z2_new = (content - content_mean)/content_std*style_std + style_mean
+
+                # Reverse with new z
+                x_new2, intermediate_zs_new2 = self.graph(z=z2_new, y_onehot=y_onehot)
+
+                # Style loss
+                loss_style += torch.mean([torch.pow(izs1.mean(2).mean(2) - izs_new2.mean(2).mean(2), 2)\
+                                          + torch.pow(izs1.std(2).std(2) - izs_new2.std(2).std(2), 2)\
+                                          for izs1, izs_new2 in zip(intermediate_zs1, intermediate_zs_new2[::-1])])
 
                 # total loss
-                loss = loss_generative + loss_classes * self.weight_y
+                loss = loss_generative + loss_style + loss_classes * self.weight_y
 
                 # log
                 if self.global_step % self.scalar_log_gaps == 0:
                     # self.writer.add_scalar("loss/loss_generative", loss_generative, self.global_step)
-                    experiment.log_metrics({"loss_generative": loss_generative})
+                    experiment.log_metrics({"loss_generative": loss_generative, "loss_style": loss_style,
+                                            "total_loss": loss})
                     if self.y_condition:
                         # self.writer.add_scalar("loss/loss_classes", loss_classes, self.global_step)
-                        experiment.log_metrics({"loss_classes": loss_classes, "total_loss": loss})
+                        experiment.log_metrics({"loss_classes": loss_classes})
 
                 # backward
                 self.graph.zero_grad()
@@ -212,7 +262,8 @@ class Trainer(object):
 
                 # plot images
                 if self.global_step % self.plot_gaps == 0:
-                    img = self.graph(z=z1, y_onehot=y_onehot, reverse=True)
+                    img1 = self.graph(z=z1, y_onehot=y_onehot, reverse=True)
+                    img2 = self.graph(z=z2, y_onehot=y_onehot, reverse=True)
                     # img = torch.clamp(img, min=0, max=1.0)
 
                     if self.y_condition:
@@ -225,39 +276,37 @@ class Trainer(object):
 
                     # plot images
                     # self.writer.add_image("0_reverse/{}".format(bi), torch.cat((img[bi], batch["x"][bi]), dim=1), self.global_step)
-                    vutils.save_image(torch.stack([torch.cat((img[bi], batch["x1"][bi]), dim=1) for bi in range(min([len(img), self.n_image_samples]))]), '/tmp/vikramvoleti.png', nrow=10)
-                    experiment.log_image('/tmp/vikramvoleti_rev.png', name="0_reverse1")
-                    vutils.save_image(torch.stack([torch.cat((img[bi], batch["x2"][bi]), dim=1) for bi in range(min([len(img), self.n_image_samples]))]), '/tmp/vikramvoleti.png', nrow=10)
-                    experiment.log_image('/tmp/vikramvoleti_rev.png', name="0_reverse2")
+                    vutils.save_image(torch.stack([torch.cat((img1[bi], batch["x1"][bi]), dim=1) for bi in range(min([len(img1), self.n_image_samples]))]), '/tmp/vikramvoleti_rev1.png', nrow=10)
+                    experiment.log_image('/tmp/vikramvoleti_rev1.png', name="0_reverse1")
+                    vutils.save_image(torch.stack([torch.cat((img2[bi], batch["x2"][bi]), dim=1) for bi in range(min([len(img2), self.n_image_samples]))]), '/tmp/vikramvoleti_rev2.png', nrow=10)
+                    experiment.log_image('/tmp/vikramvoleti_rev2.png', name="0_reverse2")
 
-                    # plot preds
-                    # for bi in range(min([len(img), self.n_image_samples])):
-                    #     # wandb.log({"0_reverse_{}".format(bi): [wandb.Image(torch.cat((img[bi], batch["x"][bi]), dim=1), caption="0_reverse/{}".format(bi))]}, step=self.global_step)
-                    #     if self.y_condition:
-                    #         # self.writer.add_image("1_prob/{}".format(bi), plot_prob([y_pred[bi], y_true[bi]], ["pred", "true"]), self.global_step)
-                    #         wandb.log({"1_prob_{}".format(bi): [wandb.Image(plot_prob([y_pred[bi], y_true[bi]], ["pred", "true"]))]}, step=self.global_step)
+                    vutils.save_image(torch.stack([torch.cat((x_new1[i], batch["x1"][i]), dim=1) for i in range(min([len(x_new1), self.n_image_samples]))]), '/tmp/vikramvoleti_new1.png', nrow=10)
+                    experiment.log_image('/tmp/vikramvoleti_new1.png', name="1_new1")
+                    vutils.save_image(torch.stack([torch.cat((x_new2[i], batch["x2"][i]), dim=1) for i in range(min([len(x_new2), self.n_image_samples]))]), '/tmp/vikramvoleti_new2.png', nrow=10)
+                    experiment.log_image('/tmp/vikramvoleti_new2.png', name="1_new2")
 
-                # inference
-                if hasattr(self, "inference_gap"):
-                    if self.global_step % self.inference_gap == 0:
-                        if self.global_step == 0:
-                            if y_onehot is not None:
-                                inference_y_onehot = torch.zeros_like(y_onehot, device=torch.device('cpu'))
-                                for i in range(inference_y_onehot.size(0)):
-                                    inference_y_onehot[i, (i % inference_y_onehot.size(1))] = 1.
-                                # now
-                                inference_y_onehot = inference_y_onehot.to(y_onehot.device)
-                            else:
-                                inference_y_onehot = None
-                        # infer
-                        img = self.graph(z=None, y_onehot=inference_y_onehot, eps_std=0.5, reverse=True)
-                        # grid
-                        vutils.save_image(img[:min([len(img), self.n_image_samples])], '/tmp/vikramvoleti.png', nrow=10)
-                        experiment.log_image('/tmp/vikramvoleti_sam.png', name="1_samples")
-                        # img = torch.clamp(img, min=0, max=1.0)
-                        # for bi in range(min([len(img), n_images])):
-                        #     # self.writer.add_image("2_sample/{}".format(bi), img[bi], self.global_step)
-                        #     wandb.log({"2_sample_{}".format(bi): [wandb.Image(img[bi])]}, step=self.global_step)
+                # # inference
+                # if hasattr(self, "inference_gap"):
+                #     if self.global_step % self.inference_gap == 0:
+                #         if self.global_step == 0:
+                #             if y_onehot is not None:
+                #                 inference_y_onehot = torch.zeros_like(y_onehot, device=torch.device('cpu'))
+                #                 for i in range(inference_y_onehot.size(0)):
+                #                     inference_y_onehot[i, (i % inference_y_onehot.size(1))] = 1.
+                #                 # now
+                #                 inference_y_onehot = inference_y_onehot.to(y_onehot.device)
+                #             else:
+                #                 inference_y_onehot = None
+                #         # infer
+                #         img = self.graph(z=None, y_onehot=inference_y_onehot, eps_std=0.5, reverse=True)
+                #         # grid
+                #         vutils.save_image(img[:min([len(img), self.n_image_samples])], '/tmp/vikramvoleti_sam.png', nrow=10)
+                #         experiment.log_image('/tmp/vikramvoleti_sam.png', name="2_samples")
+                #         # img = torch.clamp(img, min=0, max=1.0)
+                #         # for bi in range(min([len(img), n_images])):
+                #         #     # self.writer.add_image("2_sample/{}".format(bi), img[bi], self.global_step)
+                #         #     wandb.log({"2_sample_{}".format(bi): [wandb.Image(img[bi])]}, step=self.global_step)
 
                 if self.global_step == 0 or self.global_step == 1:
                     subprocess.run('nvidia-smi')

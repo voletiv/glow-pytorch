@@ -9,7 +9,7 @@ import os
 import vision
 from docopt import docopt
 from torchvision import transforms
-from glow.builder import build
+from glow.builder_adain import build
 from glow.config import JsonConfig
 from glow.trainer_adain_cometml import Trainer
 
