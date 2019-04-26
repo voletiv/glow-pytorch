@@ -46,6 +46,7 @@ if __name__ == "__main__":
         transforms.ToTensor()])
 
     # Build dataset
+    # Photoshop problem : https://github.com/python-pillow/Pillow/pull/3771
     dataset_class = vision.Datasets['adain']
     dataset = dataset_class(dataset1_root, dataset2_root, transform=transform)
 

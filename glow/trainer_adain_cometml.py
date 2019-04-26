@@ -190,10 +190,10 @@ class Trainer(object):
                 # content, style = z1.detach().clone(), z2.detach().clone()
                 content_to_calc = content.view(-1, self.output_shapes[-1][1], self.output_shapes[-1][2]*self.output_shapes[-1][3])
                 content_mean = content_to_calc.mean(2, keepdim=True).unsqueeze(-1)
-                content_std = content_to_calc.std(2, keepdim=True).unsqueeze(-1)
+                content_std = (content_to_calc.var(2, keepdim=True).unsqueeze(-1) + 1e-5).sqrt()
                 style_to_calc = style.view(-1, self.output_shapes[-1][1], self.output_shapes[-1][2]*self.output_shapes[-1][3])
                 style_mean = style_to_calc.mean(2, keepdim=True).unsqueeze(-1)
-                style_std = style_to_calc.std(2, keepdim=True).unsqueeze(-1)
+                style_std = (style_to_calc.var(2, keepdim=True).unsqueeze(-1) + 1e-5).sqrt()
                 z1_new = (content - content_mean)/content_std*style_std + style_mean
 
                 # Reverse with new z
