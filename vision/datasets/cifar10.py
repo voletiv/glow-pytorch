@@ -8,10 +8,12 @@ from torchvision.datasets import CIFAR10
 
 class CIFAR10Dataset(Dataset):
     def __init__(self, root_dir, transform=transforms.Compose([
-                                               transforms.ToTensor()])):
+                                               transforms.ToTensor()]),
+                 rot=False):
         super().__init__()
         self.root_dir = root_dir
         self.transform = transform
+        self.rot = rot
         self.dataset = CIFAR10(root_dir, transform=transform)
         self.num_classes = 10
 

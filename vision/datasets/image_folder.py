@@ -8,10 +8,12 @@ from torchvision.datasets import ImageFolder
 
 class ImageFolderDataset(Dataset):
     def __init__(self, root_dir, transform=transforms.Compose([
-                                               transforms.ToTensor()])):
+                                               transforms.ToTensor()]),
+                 rot=False):
         super().__init__()
         self.root_dir = root_dir
         self.transform = transform
+        self.rot = rot
         self.dataset = ImageFolder(root_dir, transform=transform)
         self.num_classes = len(self.dataset.classes)
 
