@@ -169,7 +169,7 @@ class FlowNet(nn.Module):
                 z, logdet = layer(z, logdet=0, reverse=True, eps_std=eps_std)
             else:
                 z, logdet = layer(z, logdet=0, reverse=True)
-        return z, intermediate_zs
+        return z, intermediate_zs[::-1]
 
 
 class Glow(nn.Module):
@@ -240,9 +240,9 @@ class Glow(nn.Module):
         # encode
         z, objective, intermediate_zs = self.flow(z, logdet=logdet, reverse=False)
 
-        # # prior
-        # mean, logs = self.prior(y_onehot)
-        # objective += modules.GaussianDiag.logp(mean, logs, z)
+        # prior
+        mean, logs = self.prior(y_onehot)
+        objective += modules.GaussianDiag.logp(mean, logs, z)
 
         # nll
         nll = (-objective) / float(np.log(2.) * pixels)

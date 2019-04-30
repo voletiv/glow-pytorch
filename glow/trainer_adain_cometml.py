@@ -1,12 +1,13 @@
 from comet_ml import Experiment
 
-import re
+import datetime
+import math
+import numpy as np
 import os
+import re
+import subprocess
 import torch
 import torch.nn.functional as F
-import datetime
-import numpy as np
-import subprocess
 import torchvision.utils as vutils
 
 from tqdm import tqdm
@@ -14,7 +15,7 @@ from tqdm import tqdm
 from torch.utils.data import DataLoader
 from .utils import save, load, plot_prob
 from .config import JsonConfig
-from .models import Glow
+from .models_adain import Glow
 from . import thops
 
 
@@ -100,6 +101,44 @@ class Trainer(object):
         hparams_dict['n_epoches'] = self.n_epoches
         return hparams_dict
 
+    def calc_mean_std(self, feat, eps=1e-5):
+        # eps is a small value added to the variance to avoid divide-by-zero.
+        size = feat.size()
+        assert (len(size) == 4)
+        N, C = size[:2]
+        feat_mean = feat.view(N, C, -1).mean(dim=2).view(N, C, 1, 1)
+        feat_var = feat.view(N, C, -1).var(dim=2) + eps
+        feat_std = feat_var.sqrt().view(N, C, 1, 1)
+        return feat_mean, feat_std
+
+    def adaIN(self, content, style):
+        content_mean, content_std = self.calc_mean_std(content)
+        style_mean, style_std = self.calc_mean_std(style)
+        z_new = (content - content_mean)/content_std*style_std + style_mean
+        return z_new
+
+    def style_loss(self, intermediate_zs_style, intermediate_zs_new):
+        loss = 0
+        for iz_s, iz_new in zip(intermediate_zs_style, intermediate_zs_new):
+            assert (iz_s.requires_grad is False)
+            iz_s_mean, iz_s_std = self.calc_mean_std(iz_s)
+            iz_new_mean, iz_new_std = self.calc_mean_std(iz_new)
+            loss += F.mse_loss(iz_s_mean, iz_new_mean) + F.mse_loss(iz_s_std, iz_new_std)
+        return loss
+        # return torch.stack([
+        #         nn.MSELoss(izs2.mean(2).mean(2), izs_new1.mean(2).mean(2))\
+        #         + nn.MSELoss(izs2.view(izs2.shape[0], izs2.shape[1], -1).std(2), izs_new1.view(izs_new1.shape[0], izs_new1.shape[1], -1).std(2))
+        #     for izs2, izs_new1 in zip(intermediate_zs_style, intermediate_zs_new)]).sum()
+        # return torch.stack([torch.mean(
+        #                                torch.pow(
+        #                                    izs2.mean(2).mean(2) - izs_new1.mean(2).mean(2),
+        #                                    2)\
+        #                                 + torch.pow(
+        #                                    izs2.view(izs2.shape[0], izs2.shape[1], -1).std(2) - izs_new1.view(izs_new1.shape[0], izs_new1.shape[1], -1).std(2),
+        #                                    2),
+        #                                dim=1)\
+        #                     for izs2, izs_new1 in zip(intermediate_zs_style, intermediate_zs_new)]).sum()
+
     def train(self, cometml_project_name="glow-adain"):
 
         # comet_ml
@@ -137,8 +176,8 @@ class Trainer(object):
                 for k in batch:
                     batch[k] = batch[k].to(self.data_device)
 
-                x1 = batch["x1"]
-                x2 = batch["x2"]
+                x_content = batch["x1"]
+                x_style = batch["x2"]
                 y1 = None
                 y2 = None
                 y_onehot1 = None
@@ -159,7 +198,7 @@ class Trainer(object):
 
                 # at first time, initialize ActNorm
                 if self.global_step == 0:
-                    self.graph(x1[:self.batch_size // len(self.devices), ...],
+                    self.graph(x_content[:self.batch_size // len(self.devices), ...],
                                y_onehot1[:self.batch_size // len(self.devices), ...] if y_onehot1 is not None else None)
 
                 # parallel
@@ -168,75 +207,57 @@ class Trainer(object):
                     self.graph = torch.nn.parallel.DataParallel(self.graph, self.devices, self.devices[0])
 
                 # forward phase
-                z1, nll1, y_logits1, intermediate_zs1 = self.graph(x=x1, y_onehot=y_onehot1)
-                z2, nll2, y_logits2, intermediate_zs2 = self.graph(x=x2, y_onehot=y_onehot2)
+                z_c, nll1, y_logits1, _ = self.graph(x=x_content, y_onehot=y_onehot1)
+                z_s, _, _, intermediate_zs_s = self.graph(x=x_style, y_onehot=y_onehot2)
+                z_s = z_s.detach().clone()
+                intermediate_zs_s = [iz_s.detach().clone() for iz_s in intermediate_zs_s]
 
                 # loss_generative
-                loss_generative = Glow.loss_generative(nll1) + Glow.loss_generative(nll2)
+                # loss_generative = Glow.loss_generative(nll1) + Glow.loss_generative(nll2)
+                loss_generative = Glow.loss_generative(nll1)
 
                 # loss_classes
                 loss_classes = 0
                 if self.y_condition:
                     loss_classes = (Glow.loss_multi_classes(y_logits1, y_onehot1)
                                     if self.y_criterion == "multi-classes" else
-                                    Glow.loss_class(y_logits1, y1))\
-                                    + (Glow.loss_multi_classes(y_logits2, y_onehot2)
-                                       if self.y_criterion == "multi-classes" else
-                                       Glow.loss_class(y_logits2, y2))
+                                    Glow.loss_class(y_logits1, y1))
+                                    # + (Glow.loss_multi_classes(y_logits2, y_onehot2)
+                                    #    if self.y_criterion == "multi-classes" else
+                                    #    Glow.loss_class(y_logits2, y2))
 
                 # AdaIN
                 # Content-1, Style-2
-                content, style = z1, z2
                 # content, style = z1.detach().clone(), z2.detach().clone()
-                content_to_calc = content.view(-1, self.output_shapes[-1][1], self.output_shapes[-1][2]*self.output_shapes[-1][3])
-                content_mean = content_to_calc.mean(2, keepdim=True).unsqueeze(-1)
-                content_std = (content_to_calc.var(2, keepdim=True).unsqueeze(-1) + 1e-5).sqrt()
-                style_to_calc = style.view(-1, self.output_shapes[-1][1], self.output_shapes[-1][2]*self.output_shapes[-1][3])
-                style_mean = style_to_calc.mean(2, keepdim=True).unsqueeze(-1)
-                style_std = (style_to_calc.var(2, keepdim=True).unsqueeze(-1) + 1e-5).sqrt()
-                z1_new = (content - content_mean)/content_std*style_std + style_mean
+                z_new = self.adaIN(z_c, z_s)
 
                 # Reverse with new z
-                x_new1, intermediate_zs_new1 = self.graph(z=z1_new, y_onehot=y_onehot1, reverse=True)
+                x_new, intermediate_zs_new = self.graph(z=z_new, y_onehot=y_onehot1, reverse=True)
 
                 # Style loss
-                loss_style = torch.stack([torch.mean(
-                                            torch.pow(
-                                                izs2.mean(2).mean(2) - izs_new1.mean(2).mean(2),
-                                                2)\
-                                            + torch.pow(
-                                                izs2.view(izs2.shape[0], izs2.shape[1], -1).std(2) - izs_new1.view(izs_new1.shape[0], izs_new1.shape[1], -1).std(2),
-                                                2),
-                                            dim=1)\
-                                         for izs2, izs_new1 in zip(intermediate_zs2, intermediate_zs_new1[::-1])]).mean()
+                loss_style = 0
+                loss_style1 = self.style_loss(intermediate_zs_s, intermediate_zs_new)
+                print(loss_style1.item())
+                # if math.isnan(loss_style1.item()):
+                #     import pdb; pdb.set_trace()
+                loss_style += loss_style1
 
-                # Content-2, Style-1
-                content, style = z2, z1
-                # content, style = z2.detach().clone(), z1.detach().clone()
-                content_to_calc = content.view(-1, self.output_shapes[-1][1], self.output_shapes[-1][2]*self.output_shapes[-1][3])
-                content_mean = content_to_calc.mean(2, keepdim=True).unsqueeze(-1)
-                content_std = content_to_calc.std(2, keepdim=True).unsqueeze(-1)
-                style_to_calc = style.view(-1, self.output_shapes[-1][1], self.output_shapes[-1][2]*self.output_shapes[-1][3])
-                style_mean = style_to_calc.mean(2, keepdim=True).unsqueeze(-1)
-                style_std = style_to_calc.std(2, keepdim=True).unsqueeze(-1)
-                z2_new = (content - content_mean)/content_std*style_std + style_mean
+                # # Content-2, Style-1
+                # # content, style = z2.detach().clone(), z1.detach().clone()
+                # z2_new = self.adaIN(z2, z1)
 
-                # Reverse with new z
-                x_new2, intermediate_zs_new2 = self.graph(z=z2_new, y_onehot=y_onehot2, reverse=True)
+                # # Reverse with new z
+                # x_new2, intermediate_zs_new2 = self.graph(z=z2_new, y_onehot=y_onehot2, reverse=True)
 
-                # Style loss
-                loss_style += torch.stack([torch.mean(
-                                            torch.pow(
-                                                izs1.mean(2).mean(2) - izs_new2.mean(2).mean(2),
-                                                2)\
-                                            + torch.pow(
-                                                izs1.view(izs1.shape[0], izs1.shape[1], -1).std(2) - izs_new2.view(izs_new2.shape[0], izs_new2.shape[1], -1).std(2),
-                                                2),
-                                            dim=1)\
-                                         for izs1, izs_new2 in zip(intermediate_zs1, intermediate_zs_new2[::-1])]).mean()
+                # # Style loss
+                # loss_style2 = self.style_loss(intermediate_zs1, intermediate_zs_new2[::-1])
+                # print(loss_style2.item())
+                # if math.isnan(loss_style2.item()):
+                #     import pdb; pdb.set_trace()
+                # loss_style += loss_style2
 
                 # total loss
-                loss = loss_generative + loss_style + loss_classes * self.weight_y
+                loss = loss_generative + loss_style *10 + loss_classes * self.weight_y
 
                 # log
                 if self.global_step % self.scalar_log_gaps == 0:
@@ -275,33 +296,34 @@ class Trainer(object):
 
                 # plot images
                 if self.global_step % self.plot_gaps == 0:
-                    img1, _ = self.graph(z=z1, y_onehot=y_onehot1, reverse=True)
-                    img2, _ = self.graph(z=z2, y_onehot=y_onehot2, reverse=True)
-                    # img = torch.clamp(img, min=0, max=1.0)
+                    rev_c, _ = self.graph(z=z_c, y_onehot=y_onehot1, reverse=True)
+                    rev_c = torch.clamp(rev_c, min=0, max=1.0)
+                    # rev_s, _ = self.graph(z=z_s, y_onehot=y_onehot2, reverse=True)
+                    # rev_s = torch.clamp(rev_s, min=0, max=1.0)
 
                     if self.y_condition:
                         if self.y_criterion == "multi-classes":
                             y_pred1 = torch.sigmoid(y_logits1)
-                            y_pred2 = torch.sigmoid(y_logits2)
+                            # y_pred2 = torch.sigmoid(y_logits2)
                         elif self.y_criterion == "single-class":
                             y_pred1 = thops.onehot(torch.argmax(F.softmax(y_logits1, dim=1), dim=1, keepdim=True),
                                                   self.y_classes)
-                            y_pred2 = thops.onehot(torch.argmax(F.softmax(y_logits2, dim=1), dim=1, keepdim=True),
-                                                  self.y_classes)
+                            # y_pred2 = thops.onehot(torch.argmax(F.softmax(y_logits2, dim=1), dim=1, keepdim=True),
+                            #                       self.y_classes)
                         y_true1 = y_onehot1
-                        y_true2 = y_onehot2
+                        # y_true2 = y_onehot2
 
                     # plot images
                     # self.writer.add_image("0_reverse/{}".format(bi), torch.cat((img[bi], batch["x"][bi]), dim=1), self.global_step)
-                    vutils.save_image(torch.stack([torch.cat((img1[i], batch["x1"][i]), dim=1) for i in range(min([len(img1), self.n_image_samples]))]), '/tmp/vikramvoleti_rev1.png', nrow=10)
+                    vutils.save_image(torch.stack([torch.cat((rev_c[i], x_content[i]), dim=1) for i in range(min([len(rev_c), self.n_image_samples]))]), '/tmp/vikramvoleti_rev1.png', nrow=10)
                     experiment.log_image('/tmp/vikramvoleti_rev1.png', name="0_reverse1")
-                    vutils.save_image(torch.stack([torch.cat((img2[i], batch["x2"][i]), dim=1) for i in range(min([len(img2), self.n_image_samples]))]), '/tmp/vikramvoleti_rev2.png', nrow=10)
-                    experiment.log_image('/tmp/vikramvoleti_rev2.png', name="0_reverse2")
+                    # vutils.save_image(torch.stack([torch.cat((img2[i], batch["x2"][i]), dim=1) for i in range(min([len(img2), self.n_image_samples]))]), '/tmp/vikramvoleti_rev2.png', nrow=10)
+                    # experiment.log_image('/tmp/vikramvoleti_rev2.png', name="0_reverse2")
 
-                    vutils.save_image(torch.stack([torch.cat((x_new1[i], batch["x1"][i], batch["x2"][i]), dim=1) for i in range(min([len(x_new1), self.n_image_samples]))]), '/tmp/vikramvoleti_new1.png', nrow=10)
+                    vutils.save_image(torch.stack([torch.cat((x_new[i], x_content[i], x_style[i]), dim=1) for i in range(min([len(x_new), self.n_image_samples]))]), '/tmp/vikramvoleti_new1.png', nrow=10)
                     experiment.log_image('/tmp/vikramvoleti_new1.png', name="1_new1")
-                    vutils.save_image(torch.stack([torch.cat((x_new2[i], batch["x2"][i], batch["x1"][i]), dim=1) for i in range(min([len(x_new2), self.n_image_samples]))]), '/tmp/vikramvoleti_new2.png', nrow=10)
-                    experiment.log_image('/tmp/vikramvoleti_new2.png', name="1_new2")
+                    # vutils.save_image(torch.stack([torch.cat((x_new2[i], batch["x2"][i], batch["x1"][i]), dim=1) for i in range(min([len(x_new2), self.n_image_samples]))]), '/tmp/vikramvoleti_new2.png', nrow=10)
+                    # experiment.log_image('/tmp/vikramvoleti_new2.png', name="1_new2")
 
                 # # inference
                 # if hasattr(self, "inference_gap"):
