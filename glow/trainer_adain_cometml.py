@@ -239,6 +239,7 @@ class Trainer(object):
 
                     # Style loss
                     loss_style = self.style_loss(style_feats, new_feats)
+                    loss += loss_style
                     # print(loss_style.item())
 
                     experiment.log_metrics({"loss_style": loss_style})
