@@ -233,9 +233,9 @@ class Glow(nn.Module):
         # encode
         z, objective = self.flow(z, logdet=logdet, reverse=False)
 
-        # # prior
-        # mean, logs = self.prior(y_onehot)
-        # objective += modules.GaussianDiag.logp(mean, logs, z)
+        # prior
+        mean, logs = self.prior(y_onehot)
+        objective += modules.GaussianDiag.logp(mean, logs, z)
 
         # nll
         nll = (-objective) / float(np.log(2.) * pixels)
