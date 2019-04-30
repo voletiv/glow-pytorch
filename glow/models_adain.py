@@ -8,11 +8,52 @@ from . import modules
 from . import utils
 
 
-def f(in_channels, out_channels, hidden_channels):
-    return nn.Sequential(
-        modules.Conv2d(in_channels, hidden_channels), nn.ReLU(inplace=False),
-        modules.Conv2d(hidden_channels, hidden_channels, kernel_size=[1, 1]), nn.ReLU(inplace=False),
-        modules.Conv2dZeros(hidden_channels, out_channels))
+# def f(in_channels, out_channels, hidden_channels):
+#     return nn.Sequential(
+#         modules.Conv2d(in_channels, hidden_channels), nn.ReLU(inplace=False),
+#         modules.Conv2d(hidden_channels, hidden_channels, kernel_size=[1, 1]), nn.ReLU(inplace=False),
+#         modules.Conv2dZeros(hidden_channels, out_channels))
+
+class f(nn.Module):
+    def __init__(self, in_channels, out_channels, hidden_channels, style_ch):
+        super().__init__()
+        self.conv1 = modules.Conv2d(in_channels, hidden_channels)
+        self.conv2 = modules.Conv2d(hidden_channels, hidden_channels, kernel_size=[1, 1])
+        self.conv3 = modules.Conv2dZeros(hidden_channels, out_channels)
+        self.relu = nn.ReLU(inplace=False)
+        self.affine_tx1 = modules.LinearZeros(style_ch, 2*hidden_channels)
+        self.affine_tx2 = modules.LinearZeros(style_ch, 2*hidden_channels)
+
+    def forward(self, z, style_feat=None):
+        z = self.conv1(z)
+        if style_feat is not None:
+            style_mean, style_logstd = self.affine_tx1(style_feat).chunk(2, 1)
+            style_mean, style_std = style_mean.unsqueeze(-1).unsqueeze(-1), torch.exp(style_logstd).unsqueeze(-1).unsqueeze(-1)
+            z = self.adaIN(z, style_mean, style_std)
+        z = self.relu(z)
+        z = self.conv2(z)
+        if style_feat is not None:
+            style_mean, style_logstd = self.affine_tx2(style_feat).chunk(2, 1)
+            style_mean, style_std = style_mean.unsqueeze(-1).unsqueeze(-1), torch.exp(style_logstd).unsqueeze(-1).unsqueeze(-1)
+            z = self.adaIN(z, style_mean, style_std)
+        z = self.relu(z)
+        z = self.conv3(z)
+        return z
+
+    def calc_mean_std(self, feat, eps=1e-5):
+        # eps is a small value added to the variance to avoid divide-by-zero.
+        size = feat.size()
+        assert (len(size) == 4)
+        N, C = size[:2]
+        feat_mean = feat.view(N, C, -1).mean(dim=2).view(N, C, 1, 1)
+        feat_var = feat.view(N, C, -1).var(dim=2) + eps
+        feat_std = feat_var.sqrt().view(N, C, 1, 1)
+        return feat_mean, feat_std
+
+    def adaIN(self, content, style_mean, style_std):
+        content_mean, content_std = self.calc_mean_std(content)
+        z_new = (content - content_mean)/content_std*style_std + style_mean
+        return z_new
 
 
 class FlowStep(nn.Module):
@@ -23,7 +64,7 @@ class FlowStep(nn.Module):
         "invconv": lambda obj, z, logdet, rev: obj.invconv(z, logdet, rev)
     }
 
-    def __init__(self, in_channels, hidden_channels,
+    def __init__(self, in_channels, hidden_channels, style_ch,
                  actnorm_scale=1.0,
                  flow_permutation="invconv",
                  flow_coupling="additive",
@@ -49,17 +90,17 @@ class FlowStep(nn.Module):
             self.reverse = modules.Permute2d(in_channels, shuffle=False)
         # 3. coupling
         if flow_coupling == "additive":
-            self.f = f(in_channels // 2, in_channels // 2, hidden_channels)
+            self.f = f(in_channels // 2, in_channels // 2, hidden_channels, style_ch)
         elif flow_coupling == "affine":
-            self.f = f(in_channels // 2, in_channels, hidden_channels)
+            self.f = f(in_channels // 2, in_channels, hidden_channels, style_ch)
 
-    def forward(self, input, logdet=None, reverse=False):
+    def forward(self, input, logdet=None, style_feat=None, reverse=False):
         if not reverse:
-            return self.normal_flow(input, logdet)
+            return self.normal_flow(input, logdet, style_feat)
         else:
             return self.reverse_flow(input, logdet)
 
-    def normal_flow(self, input, logdet):
+    def normal_flow(self, input, logdet, style_feat):
         assert input.size(1) % 2 == 0
         # 1. actnorm
         z, logdet = self.actnorm(input, logdet=logdet, reverse=False)
@@ -69,9 +110,9 @@ class FlowStep(nn.Module):
         # 3. coupling
         z1, z2 = thops.split_feature(z, "split")
         if self.flow_coupling == "additive":
-            z2 = z2 + self.f(z1)
+            z2 = z2 + self.f(z1, style_feat)
         elif self.flow_coupling == "affine":
-            h = self.f(z1)
+            h = self.f(z1, style_feat)
             shift, scale = thops.split_feature(h, "cross")
             scale = torch.sigmoid(scale + 2.)
             z2 = z2 + shift
@@ -133,6 +174,7 @@ class FlowNet(nn.Module):
                 self.layers.append(
                     FlowStep(in_channels=C,
                              hidden_channels=hidden_channels,
+                             style_ch=C//2,
                              actnorm_scale=actnorm_scale,
                              flow_permutation=flow_permutation,
                              flow_coupling=flow_coupling,
@@ -145,19 +187,40 @@ class FlowNet(nn.Module):
                 self.output_shapes.append([-1, C // 2, H, W])
                 C = C // 2
 
-    def forward(self, input, logdet=0., reverse=False, eps_std=None):
+    def forward(self, input, logdet=0., style_feats=None, reverse=False, eps_std=None):
         if not reverse:
-            return self.encode(input, logdet)
+            return self.encode(input, logdet, style_feats)
         else:
             return self.decode(input, eps_std)
 
-    def encode(self, z, logdet=0.0):
+    def encode(self, z, logdet=0.0, style_feats=None):
+        # Style
+        style_feat_index = 0
+        if style_feats is not None:
+            style_feat = style_feats[style_feat_index]
+            style_feat = style_feat.mean(2).mean(2)
+        else:
+            style_feat = None
+        # Intermediate zs
         intermediate_zs = []
+        # For each layer
         for layer, shape in zip(self.layers, self.output_shapes):
-            z, logdet = layer(z, logdet, reverse=False)
+            # Encode
+            if isinstance(layer, FlowStep):
+                z, logdet = layer(z, logdet, style_feat=style_feat, reverse=False)
+            else:
+                z, logdet = layer(z, logdet, reverse=False)
+            # Split
             if isinstance(layer, modules.Split2d):
                 # intermediate_zs.append(z.detach.clone())
                 intermediate_zs.append(z)
+                # Style
+                style_feat_index += 1
+                if style_feats is not None and style_feat_index < len(style_feats):
+                    style_feat = style_feats[style_feat_index]
+                    style_feat = style_feat.mean(2).mean(2)
+                else:
+                    style_feat = None
         return z, logdet, intermediate_zs
 
     def decode(self, z, eps_std=None):
@@ -189,17 +252,17 @@ class Glow(nn.Module):
         self.hparams = hparams
         self.y_classes = hparams.Glow.y_classes
         # for prior
-        # if hparams.Glow.learn_top:
-        #     C = self.flow.output_shapes[-1][1]
-        #     self.learn_top = modules.Conv2dZeros(C * 2, C * 2)
-        # if hparams.Glow.y_condition:
-        #     C = self.flow.output_shapes[-1][1]
-        #     self.project_ycond = modules.LinearZeros(
-        #         hparams.Glow.y_classes, 2 * C)
-        #     self.project_class = modules.LinearZeros(
-        #         C, hparams.Glow.y_classes)
-        self.project_rot = modules.LinearZeros(self.flow.output_shapes[-1][1]*self.flow.output_shapes[-1][2]*self.flow.output_shapes[-1][3],
-                                               4)
+        if hparams.Glow.learn_top:
+            C = self.flow.output_shapes[-1][1]
+            self.learn_top = modules.Conv2dZeros(C * 2, C * 2)
+        if hparams.Glow.y_condition:
+            C = self.flow.output_shapes[-1][1]
+            self.project_ycond = modules.LinearZeros(
+                hparams.Glow.y_classes, 2 * C)
+            self.project_class = modules.LinearZeros(
+                C, hparams.Glow.y_classes)
+        # self.project_rot = modules.LinearZeros(self.flow.output_shapes[-1][1]*self.flow.output_shapes[-1][2]*self.flow.output_shapes[-1][3],
+        #                                        4)
 
         # register prior hidden
         num_device = len(utils.get_proper_device(hparams.Device.glow, False))
@@ -223,22 +286,24 @@ class Glow(nn.Module):
             h += yp
         return thops.split_feature(h, "split")
 
-    def forward(self, x=None, y_onehot=None, z=None,
-                eps_std=None, reverse=False):
+    def forward(self, x=None, y_onehot=None, style_feats=None,
+                z=None, eps_std=None, reverse=False):
         if not reverse:
-            return self.normal_flow(x, y_onehot)
+            return self.normal_flow(x, y_onehot, style_feats)
         else:
             return self.reverse_flow(z, y_onehot, eps_std)
 
-    def normal_flow(self, x, y_onehot):
+    def normal_flow(self, x, y_onehot, style_feats):
         B = self.hparams.Train.batch_size
         pixels = thops.pixels(x)
         z = x + torch.normal(mean=torch.zeros_like(x),
                              std=torch.ones_like(x) * (1. / 256.))
+
         logdet = torch.zeros_like(x[:, 0, 0, 0])
         logdet += float(-np.log(256.) * pixels)
+
         # encode
-        z, objective, intermediate_zs = self.flow(z, logdet=logdet, reverse=False)
+        z, objective, intermediate_zs = self.flow(z, logdet=logdet, style_feats=style_feats, reverse=False)
 
         # prior
         mean, logs = self.prior(y_onehot)
