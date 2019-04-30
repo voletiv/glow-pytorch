@@ -7,41 +7,49 @@ from torchvision.datasets import ImageFolder
 
 
 class AdaINDataset(Dataset):
-    def __init__(self, data1_class, data1_dir, data2_class, data2_dir, transform=transforms.Compose([
-                                                transforms.ToTensor()])):
+    def __init__(self, content_data_class, content_data_dir, style_data_class, style_data_dir,
+                 transform=transforms.Compose([transforms.ToTensor()])):
         super().__init__()
-        self.data1_class = data1_class
-        self.data1_dir = data1_dir
-        self.data2_class = data2_class
-        self.data2_dir = data2_dir
+        self.data_c_class = content_data_class
+        self.data_c_dir = content_data_dir
+        self.data_s_class = style_data_class
+        self.data_s_dir = style_data_dir
         self.transform = transform
-        self.dataset1 = self.data1_class(self.data1_dir, transform=transform)
-        self.dataset2 = self.data2_class(self.data2_dir, transform=transform)
-        self.len_dataset1 = len(self.dataset1)
-        self.len_dataset2 = len(self.dataset2)
+        self.ds_c = self.data_c_class(self.data_c_dir, transform=transform)
+        self.ds_s = self.data_s_class(self.data_s_dir, transform=transform)
+        self.ds_c_len = len(self.ds_c)
+        self.ds_s_len = len(self.ds_s)
 
     def __getitem__(self, index):
-        dataset1_index = index
-        dataset2_index = np.random.randint(self.len_dataset2)
-        data1 = self.dataset1.__getitem__(dataset1_index)
-        data2 = self.dataset2.__getitem__(dataset2_index)
-        # x1
-        if isinstance(self.data1_class, ImageFolder):
-            x1, _ = data1
+        ds_c_index = index
+        ds_s_index = np.random.randint(self.ds_s_len)
+        data_c = self.ds_c.__getitem__(ds_c_index)
+        data_s = self.ds_s.__getitem__(ds_s_index)
+        # Content
+        if isinstance(self.data_c_class, ImageFolder):
+            x_c, y_c = data_c
+            y_onehot_c = [0.]*self.ds_c.num_classes
+            y_onehot_c[y_c] = 1.
+            y_onehot_c = np.asarray(y_onehot_c, dtype=np.float32)
         else:
-            x1 = data1["x"]
-        # x2
-        if isinstance(self.data2_class, ImageFolder):
-            x2, _ = data2
+            x_c = data_c["x"]
+            y_onehot_c = data_c["y_onehot"]
+        # Style
+        if isinstance(self.data_s_class, ImageFolder):
+            x_s, y_s = data_s
+            y_onehot_s = [0.]*self.ds_s.num_classes
+            y_onehot_s[y_s] = 1.
+            y_onehot_s = np.asarray(y_onehot_s, dtype=np.float32)
         else:
-            x2 = data2["x"]
-        # Add instance noise ~ U(0,1)
-        # x1 = (x1*255. + torch.rand(x1.size()))/256.
-        # x2 = (x2*255. + torch.rand(x2.size()))/256.
+            x_s = data_s["x"]
+            y_onehot_s = data_s["y_onehot"]
+        # Return
         return {
-            "x1": x1,
-            "x2": x2,
+            "x_c": x_c,
+            "x_s": x_s,
+            "y_onehot_c": y_onehot_c,
+            "y_onehot_s": y_onehot_s
         }
 
     def __len__(self):
-        return self.len_dataset1
+        return self.ds_c_len

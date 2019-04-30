@@ -182,15 +182,15 @@ class Glow(nn.Module):
         self.hparams = hparams
         self.y_classes = hparams.Glow.y_classes
         # for prior
-        # if hparams.Glow.learn_top:
-        #     C = self.flow.output_shapes[-1][1]
-        #     self.learn_top = modules.Conv2dZeros(C * 2, C * 2)
-        # if hparams.Glow.y_condition:
-        #     C = self.flow.output_shapes[-1][1]
-        #     self.project_ycond = modules.LinearZeros(
-        #         hparams.Glow.y_classes, 2 * C)
-        #     self.project_class = modules.LinearZeros(
-        #         C, hparams.Glow.y_classes)
+        if hparams.Glow.learn_top:
+            C = self.flow.output_shapes[-1][1]
+            self.learn_top = modules.Conv2dZeros(C * 2, C * 2)
+        if hparams.Glow.y_condition:
+            C = self.flow.output_shapes[-1][1]
+            self.project_ycond = modules.LinearZeros(
+                hparams.Glow.y_classes, 2 * C)
+            self.project_class = modules.LinearZeros(
+                C, hparams.Glow.y_classes)
         self.project_rot = modules.LinearZeros(self.flow.output_shapes[-1][1]*self.flow.output_shapes[-1][2]*self.flow.output_shapes[-1][3],
                                                4)
 

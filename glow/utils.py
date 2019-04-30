@@ -82,7 +82,7 @@ def save(global_step, graph, optim, criterion_dict=None, pkg_dir="", is_best=Fal
         history = []
         for file_name in os.listdir(pkg_dir):
             if re.search("ckpt_\d*k\d*\.pkg", file_name):
-                digits = file_name.replace("save_", "").replace(".pkg", "").split("k")
+                digits = file_name.replace("ckpt_", "").replace(".pkg", "").split("k")
                 number = int(digits[0]) * 1000 + int(digits[1])
                 history.append(number)
         history.sort()

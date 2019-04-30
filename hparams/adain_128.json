@@ -5,7 +5,7 @@
     "Glow" : {
         "image_shape": [128, 128, 3],
         "hidden_channels": 512,
-        "K": 32,
+        "K": 4,
         "L": 5,
         "actnorm_scale": 1.0,
         "flow_permutation": "invconv",
@@ -42,7 +42,8 @@
         "data": "cuda:0"
     },
     "Train": {
-        "batch_size": 128,
+        "style_freq": 10,
+        "batch_size": 1,
         "num_batches": 5000,
         "max_grad_clip": 5,
         "max_grad_norm": 100,
