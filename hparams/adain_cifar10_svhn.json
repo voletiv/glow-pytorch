@@ -1,6 +1,6 @@
 {
     "Dir": {
-        "log_root": "results/glow/cifar_svhn"
+        "log_root": "/scratch/voletivi/glow/cifar_svhn"
     },
     "Glow" : {
         "image_shape": [32, 32, 3],
@@ -38,12 +38,14 @@
         }
     },
     "Device": {
-        "glow": ["cuda:0"],
+        "glow": ["cuda:0", "cuda:1"],
         "data": "cuda:0"
     },
     "Train": {
-        "style_freq": 5,
-        "batch_size": 2,
+        "batch_size": 128,
+        "style_delay_epochs": 5,
+        "style_batch_size": 32,
+        "style_freq": 10,
         "num_batches": 15000,
         "max_grad_clip": 5,
         "max_grad_norm": 100,
@@ -53,7 +55,7 @@
         "scalar_log_gap": 50,
         "plot_gap": 50,
         "inference_gap": 50,
-        "n_image_samples": 20,
+        "n_image_samples": 30,
         "warm_start": "",
         "weight_y": 0.5
     },

@@ -35,6 +35,7 @@ class Trainer(object):
                                      .replace(":", "")\
                                      .replace(" ", "_")
         self.log_dir = os.path.join(hparams.Dir.log_root, self.date + "_" + self.name)
+        print("LOG_DIR", self.log_dir)
         self.checkpoints_dir = os.path.join(self.log_dir, "checkpoints")
         if not os.path.exists(self.log_dir):
             os.makedirs(self.log_dir)
@@ -63,12 +64,17 @@ class Trainer(object):
                                       num_workers=8,
                                       shuffle=True,
                                       drop_last=True)
+        # style
         self.style_data_loader = DataLoader(style_dataset,
                                       batch_size=self.batch_size,
                                       num_workers=8,
                                       shuffle=True,
                                       drop_last=True)
         self.style_iter = iter(self.style_data_loader)
+        self.style_delay_epochs = hparams.Train.style_delay_epochs
+        self.style_freq = hparams.Train.style_freq
+        self.style_batch_size = hparams.Train.style_batch_size
+        # epochs
         self.n_epoches = (hparams.Train.num_batches+len(self.content_data_loader)-1) // len(self.content_data_loader)
         self.global_step = 0
         # lr schedule
@@ -80,8 +86,6 @@ class Trainer(object):
         self.y_criterion = hparams.Criterion.y_criterion
         # Checkpoints
         assert self.y_criterion in ["multi-classes", "single-class"]
-        # style freq
-        self.style_freq = hparams.Train.style_freq
 
         # log relative
         # tensorboard
@@ -160,7 +164,7 @@ class Trainer(object):
 
         # begin to train
         for epoch in range(self.n_epoches):
-            print("epoch", epoch)
+            print("epoch", epoch, self.log_dir)
             progress = tqdm(self.content_data_loader)
             for i_batch, batch in enumerate(progress):
 
@@ -221,7 +225,191 @@ class Trainer(object):
                 loss = loss_generative + loss_classes * self.weight_y
 
                 # AdaIN
-                if self.global_step > 0 and self.global_step % self.style_freq == 0:
+                # AFTER style_delay_epochs!!!
+                # if self.global_step > self.style_delay and self.global_step % self.style_freq == 0:
+
+                #     # Get style samples
+                #     x_s = self.get_style_samples()
+
+                #     # Forward style
+                #     _, _, _, style_feats = self.graph(x=x_s, y_onehot=None)
+
+                #     # Forward content + style AdaIN
+                #     z_new, _, _, _ = self.graph(x=x_c, y_onehot=y_onehot_c, style_feats=style_feats)
+
+                #     # Reverse with new z
+                #     x_new, new_feats = self.graph(z=z_new, y_onehot=y_onehot_c, reverse=True)
+
+                #     # Style loss
+                #     loss_style = self.style_loss(style_feats, new_feats)
+                #     loss += loss_style
+                #     # print(loss_style.item())
+
+                #     experiment.log_metrics({"loss_style": loss_style})
+
+                # log
+                if self.global_step % self.scalar_log_gaps == 0:
+                    # self.writer.add_scalar("loss/loss_generative", loss_generative, self.global_step)
+                    experiment.log_metrics({"loss_generative": loss_generative,
+                                            "total_loss": loss})
+                    if self.y_condition:
+                        # self.writer.add_scalar("loss/loss_classes", loss_classes, self.global_step)
+                        experiment.log_metrics({"loss_classes": loss_classes})
+
+                # backward
+                self.graph.zero_grad()
+                self.optim.zero_grad()
+                loss.backward()
+
+                # operate grad
+                if self.max_grad_clip is not None and self.max_grad_clip > 0:
+                    torch.nn.utils.clip_grad_value_(self.graph.parameters(), self.max_grad_clip)
+                if self.max_grad_norm is not None and self.max_grad_norm > 0:
+                    grad_norm = torch.nn.utils.clip_grad_norm_(self.graph.parameters(), self.max_grad_norm)
+                    if self.global_step % self.scalar_log_gaps == 0:
+                        # self.writer.add_scalar("grad_norm/grad_norm", grad_norm, self.global_step)
+                        experiment.log_metrics({"grad_norm": grad_norm})
+
+                # step
+                self.optim.step()
+
+                # checkpoints
+                if self.global_step % self.checkpoints_gap == 0 and self.global_step > 0:
+                    save(global_step=self.global_step,
+                         graph=self.graph,
+                         optim=self.optim,
+                         pkg_dir=self.checkpoints_dir,
+                         is_best=True,
+                         max_checkpoints=self.max_checkpoints)
+
+                # plot images
+                if self.global_step % self.plot_gaps == 0:
+                    rev_c, _ = self.graph(z=z_c, y_onehot=y_onehot_c, reverse=True)
+                    rev_c_clamp = torch.clamp(rev_c, min=0, max=1.0)
+
+                    # plot images
+                    # self.writer.add_image("0_reverse/{}".format(bi), torch.cat((img[bi], batch["x"][bi]), dim=1), self.global_step)
+                    vutils.save_image(torch.stack([torch.cat((rev_c_clamp[i], rev_c[i], x_c[i]), dim=1) for i in range(min([len(rev_c), self.n_image_samples]))]), '/tmp/vikramvoleti_rev1.png', nrow=10)
+                    experiment.log_image('/tmp/vikramvoleti_rev1.png', name="0_reverse1")
+
+                    try:
+                        vutils.save_image(torch.stack([torch.cat((x_new[i], x_c[i], x_s[i]), dim=1) for i in range(min([len(x_new), self.n_image_samples]))]), '/tmp/vikramvoleti_new1.png', nrow=10)
+                        experiment.log_image('/tmp/vikramvoleti_new1.png', name="1_new1")
+                    except:
+                        pass
+
+                # inference
+                if hasattr(self, "inference_gap"):
+                    if self.global_step % self.inference_gap == 0:
+                        if self.global_step == 0:
+                            if y_onehot is not None:
+                                inference_y_onehot = torch.zeros_like(y_onehot, device=torch.device('cpu'))
+                                for i in range(inference_y_onehot.size(0)):
+                                    inference_y_onehot[i, (i % inference_y_onehot.size(1))] = 1.
+                                # now
+                                inference_y_onehot = inference_y_onehot.to(y_onehot.device)
+                            else:
+                                inference_y_onehot = None
+                        # infer
+                        img = self.graph(z=None, y_onehot=inference_y_onehot, eps_std=0.5, reverse=True)
+                        # grid
+                        vutils.save_image(img[:min([len(img), self.n_image_samples])], '/tmp/vikramvoleti_sam.png', nrow=10)
+                        experiment.log_image('/tmp/vikramvoleti_sam.png', name="2_samples")
+                        del img
+
+                if self.global_step in list(range(22)):
+                    subprocess.run('nvidia-smi')
+
+                # delete loss, output
+                del loss, z_c, nll_c, y_logits_c
+                if  self.global_step > self.style_delay and self.global_step % self.style_freq == 0:
+                    del style_feats, z_new, x_new, new_feats
+                if self.global_step % self.plot_gaps == 0:
+                    del rev_c, rev_c_clamp
+
+                # global step
+                self.global_step += 1
+
+            if self.global_step >= self.style_delay_epochs:
+                break
+
+        # Reduce batch size, train with style
+        self.content_data_loader = DataLoader(content_dataset,
+                                      batch_size=self.style_batch_size,
+                                      num_workers=8,
+                                      shuffle=True,
+                                      drop_last=True)
+        # style
+        self.style_data_loader = DataLoader(style_dataset,
+                                      batch_size=self.style_batch_size,
+                                      num_workers=8,
+                                      shuffle=True,
+                                      drop_last=True)
+
+        # begin to train
+        for epoch in range(epoch, self.n_epoches):
+            print("epoch", epoch, self.log_dir)
+            progress = tqdm(self.content_data_loader)
+            for i_batch, batch in enumerate(progress):
+
+                experiment.set_step(self.global_step)
+
+                # update learning rate
+                lr = self.lrschedule["func"](global_step=self.global_step,
+                                             **self.lrschedule["args"])
+                for param_group in self.optim.param_groups:
+                    param_group['lr'] = lr
+                self.optim.zero_grad()
+
+                # log
+                if self.global_step % self.scalar_log_gaps == 0:
+                    # self.writer.add_scalar("lr/lr", lr, self.global_step)
+                    experiment.log_metrics({"lr": lr, "epoch": epoch+i_batch/len(self.content_data_loader)})
+
+                # get batch data
+                for k in batch:
+                    batch[k] = batch[k].to(self.data_device)
+
+                x_c = batch["x"]
+                y_c = None
+                y_onehot_c = None
+                if self.y_condition:
+                    if self.y_criterion == "multi-classes":
+                        assert "y_onehot_c" in batch, "multi-classes ask for `y_onehot_c` (torch.FloatTensor onehot)"
+                        y_onehot_c = batch["y_onehot_c"]
+                    elif self.y_criterion == "single-class":
+                        assert "y_c" in batch, "single-class ask for `y_c` (torch.LongTensor indexes)"
+                        y_c = batch["y_c"]
+                        y_onehot_c = thops.onehot(y_c, num_classes=self.y_classes)
+
+                # at first time, initialize ActNorm
+                if self.global_step == 0:
+                    self.graph(x_c[:self.batch_size // len(self.devices), ...],
+                               y_onehot_c[:self.batch_size // len(self.devices), ...] if y_onehot_c is not None else None)
+
+                # parallel
+                if len(self.devices) > 1 and not hasattr(self.graph, "module"):
+                    print("[Parallel] move to {}".format(self.devices))
+                    self.graph = torch.nn.parallel.DataParallel(self.graph, self.devices, self.devices[0])
+
+                # forward phase
+                z_c, nll_c, y_logits_c, _ = self.graph(x=x_c, y_onehot=y_onehot_c)
+
+                # loss_generative
+                loss_generative = Glow.loss_generative(nll_c)
+
+                # loss_classes
+                loss_classes = 0
+                if self.y_condition:
+                    loss_classes = (Glow.loss_multi_classes(y_logits_c, y_onehot_c)
+                                    if self.y_criterion == "multi-classes" else
+                                    Glow.loss_class(y_logits_c, y_c))
+
+                # total loss
+                loss = loss_generative + loss_classes * self.weight_y
+
+                # AdaIN
+                if self.global_step % self.style_freq == 0:
 
                     # Get style samples
                     x_s = self.get_style_samples()
@@ -280,19 +468,11 @@ class Trainer(object):
                 # plot images
                 if self.global_step % self.plot_gaps == 0:
                     rev_c, _ = self.graph(z=z_c, y_onehot=y_onehot_c, reverse=True)
-                    rev_c = torch.clamp(rev_c, min=0, max=1.0)
-
-                    if self.y_condition:
-                        if self.y_criterion == "multi-classes":
-                            y_pred_c = torch.sigmoid(y_logits_c)
-                        elif self.y_criterion == "single-class":
-                            y_pred_c = thops.onehot(torch.argmax(F.softmax(y_logits_c, dim=1), dim=1, keepdim=True),
-                                                  self.y_classes)
-                        y_true_c = y_onehot_c
+                    rev_c_clamp = torch.clamp(rev_c, min=0, max=1.0)
 
                     # plot images
                     # self.writer.add_image("0_reverse/{}".format(bi), torch.cat((img[bi], batch["x"][bi]), dim=1), self.global_step)
-                    vutils.save_image(torch.stack([torch.cat((rev_c[i], x_c[i]), dim=1) for i in range(min([len(rev_c), self.n_image_samples]))]), '/tmp/vikramvoleti_rev1.png', nrow=10)
+                    vutils.save_image(torch.stack([torch.cat((rev_c_clamp[i], rev_c[i], x_c[i]), dim=1) for i in range(min([len(rev_c), self.n_image_samples]))]), '/tmp/vikramvoleti_rev1.png', nrow=10)
                     experiment.log_image('/tmp/vikramvoleti_rev1.png', name="0_reverse1")
 
                     try:
@@ -301,40 +481,36 @@ class Trainer(object):
                     except:
                         pass
 
-                # # inference
-                # if hasattr(self, "inference_gap"):
-                #     if self.global_step % self.inference_gap == 0:
-                #         if self.global_step == 0:
-                #             if y_onehot is not None:
-                #                 inference_y_onehot = torch.zeros_like(y_onehot, device=torch.device('cpu'))
-                #                 for i in range(inference_y_onehot.size(0)):
-                #                     inference_y_onehot[i, (i % inference_y_onehot.size(1))] = 1.
-                #                 # now
-                #                 inference_y_onehot = inference_y_onehot.to(y_onehot.device)
-                #             else:
-                #                 inference_y_onehot = None
-                #         # infer
-                #         img = self.graph(z=None, y_onehot=inference_y_onehot, eps_std=0.5, reverse=True)
-                #         # grid
-                #         vutils.save_image(img[:min([len(img), self.n_image_samples])], '/tmp/vikramvoleti_sam.png', nrow=10)
-                #         experiment.log_image('/tmp/vikramvoleti_sam.png', name="2_samples")
-                #         # img = torch.clamp(img, min=0, max=1.0)
-                #         # for bi in range(min([len(img), n_images])):
-                #         #     # self.writer.add_image("2_sample/{}".format(bi), img[bi], self.global_step)
-                #         #     wandb.log({"2_sample_{}".format(bi): [wandb.Image(img[bi])]}, step=self.global_step)
+                # inference
+                if hasattr(self, "inference_gap"):
+                    if self.global_step % self.inference_gap == 0:
+                        if self.global_step == 0:
+                            if y_onehot is not None:
+                                inference_y_onehot = torch.zeros_like(y_onehot, device=torch.device('cpu'))
+                                for i in range(inference_y_onehot.size(0)):
+                                    inference_y_onehot[i, (i % inference_y_onehot.size(1))] = 1.
+                                # now
+                                inference_y_onehot = inference_y_onehot.to(y_onehot.device)
+                            else:
+                                inference_y_onehot = None
+                        # infer
+                        img = self.graph(z=None, y_onehot=inference_y_onehot, eps_std=0.5, reverse=True)
+                        # grid
+                        vutils.save_image(img[:min([len(img), self.n_image_samples])], '/tmp/vikramvoleti_sam.png', nrow=10)
+                        experiment.log_image('/tmp/vikramvoleti_sam.png', name="2_samples")
+                        del img
 
-                if self.global_step == 0 or self.global_step == 1:
+                if self.global_step in list(range(22)):
                     subprocess.run('nvidia-smi')
-
-                # global step
-                self.global_step += 1
 
                 # delete loss, output
                 del loss, z_c, nll_c, y_logits_c
-                if  self.global_step > 0 and self.global_step % self.style_freq == 0:
-                    del x_s, style_feats, z_new, x_new, new_feats
+                if  self.global_step % self.style_freq == 0:
+                    del style_feats, z_new, x_new, new_feats
                 if self.global_step % self.plot_gaps == 0:
-                    del rev_c
+                    del rev_c, rev_c_clamp
 
+                # global step
+                self.global_step += 1
         # self.writer.export_scalars_to_json(os.path.join(self.log_dir, "all_scalars.json"))
         # self.writer.close()
