@@ -221,15 +221,13 @@ class Trainer(object):
                 loss = loss_generative + loss_classes * self.weight_y
 
                 # AdaIN
-                if (self.global_step + 1) % self.style_freq == 0:
-                    # Content-1, Style-2
-                    # content, style = z1.detach().clone(), z2.detach().clone()
+                if self.global_step > 0 and self.global_step % self.style_freq == 0:
 
                     # Get style samples
                     x_s = self.get_style_samples()
 
                     # Forward style
-                    z_s, _, _, style_feats = self.graph(x=x_s, y_onehot=None)
+                    _, _, _, style_feats = self.graph(x=x_s, y_onehot=None)
 
                     # Forward content + style AdaIN
                     z_new, _, _, _ = self.graph(x=x_c, y_onehot=y_onehot_c, style_feats=style_feats)
@@ -330,6 +328,13 @@ class Trainer(object):
 
                 # global step
                 self.global_step += 1
+
+                # delete loss, output
+                del loss, z_c, nll_c, y_logits_c
+                if  self.global_step > 0 and self.global_step % self.style_freq == 0:
+                    del x_s, style_feats, z_new, x_new, new_feats
+                if self.global_step % self.plot_gaps == 0:
+                    del rev_c
 
         # self.writer.export_scalars_to_json(os.path.join(self.log_dir, "all_scalars.json"))
         # self.writer.close()
